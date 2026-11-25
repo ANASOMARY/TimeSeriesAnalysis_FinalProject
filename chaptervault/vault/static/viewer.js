@@ -39,8 +39,11 @@
     canvas.width = 0;
     canvas.height = 0;
     el.appendChild(canvas);
+    var marks = document.createElement('div');
+    marks.className = 'marks';
+    el.appendChild(marks);
     pagesEl.appendChild(el);
-    return { n: index + 1, w: size[0], h: size[1], el: el, canvas: canvas, near: false, loading: false, have: 0 };
+    return { n: index + 1, w: size[0], h: size[1], el: el, canvas: canvas, marks: marks, near: false, loading: false, have: 0 };
   });
 
   // ------------------------------------------------------------- layout
@@ -112,6 +115,7 @@
             leaf.canvas.getContext('2d').drawImage(bitmap, 0, 0);
             leaf.have = want;
             leaf.el.classList.add('loaded');
+            fetchOutlines(leaf);
           }
           bitmap.close();
         });
@@ -154,7 +158,7 @@
       if (page !== current) {
         current = page;
         if (document.activeElement !== pageInput) pageInput.value = String(page);
-        if (notePage) notePage.textContent = String(page);
+        refreshTarget();
         markNotes();
       }
     });
@@ -265,6 +269,199 @@
     }).catch(function () {});
   }, 20000);
 
+  // ------------------------------------------------- pinning notes to passages
+  // The server sends paragraph outlines: rectangles only, never text. Clicking one, or dragging
+  // a box anywhere on a page, selects the passage the next note will be pinned to.
+  var outlines = {};       // page number -> list of [left, top, right, bottom] as fractions of the page
+  var selection = null;    // { page, box }
+  var drag = null;
+  var afterDrag = false;
+  var hoverMark = makeMark('hover');
+  var pickMark = makeMark('pick');
+  var noteScope = document.getElementById('note-scope');
+  var noteClear = document.getElementById('note-clear');
+
+  function makeMark(kind) {
+    var el = document.createElement('div');
+    el.className = 'mark ' + kind;
+    return el;
+  }
+
+  function place(el, box) {
+    el.style.left = (box[0] * 100) + '%';
+    el.style.top = (box[1] * 100) + '%';
+    el.style.width = ((box[2] - box[0]) * 100) + '%';
+    el.style.height = ((box[3] - box[1]) * 100) + '%';
+  }
+
+  function fetchOutlines(leaf) {
+    if (!cfg.canComment || outlines[leaf.n]) return;
+    outlines[leaf.n] = [];
+    fetch(cfg.blocksUrl + leaf.n, { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (response) { return response.ok ? response.json() : { blocks: [] }; })
+      .then(function (data) { outlines[leaf.n] = data.blocks || []; })
+      .catch(function () { delete outlines[leaf.n]; });
+  }
+
+  function leafOf(target) {
+    var el = target && target.closest ? target.closest('.leaf') : null;
+    return el ? leaves[Number(el.getAttribute('data-n')) - 1] : null;
+  }
+
+  function pointOn(leaf, event) {
+    var rect = leaf.el.getBoundingClientRect();
+    return [Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+            Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))];
+  }
+
+  function outlineAt(leaf, point) {
+    var best = null;
+    (outlines[leaf.n] || []).forEach(function (box) {
+      if (point[0] >= box[0] && point[0] <= box[2] && point[1] >= box[1] && point[1] <= box[3]) {
+        if (!best || (box[2] - box[0]) * (box[3] - box[1]) < (best[2] - best[0]) * (best[3] - best[1])) best = box;
+      }
+    });
+    return best;
+  }
+
+  function refreshTarget() {
+    if (!notePage) return;
+    notePage.textContent = String(selection ? selection.page : current);
+    noteScope.textContent = selection ? '· selected passage' : '· whole page';
+    noteClear.hidden = !selection;
+  }
+
+  function select(leaf, box) {
+    selection = { page: leaf.n, box: box };
+    place(pickMark, box);
+    leaf.marks.appendChild(pickMark);
+    hoverMark.remove();
+    refreshTarget();
+    if (notesPanel.hidden) toggleNotes(true);
+    document.getElementById('note-body').focus({ preventScroll: true });
+  }
+
+  function clearSelection() {
+    selection = null;
+    pickMark.remove();
+    refreshTarget();
+  }
+
+  if (cfg.canComment) {
+    document.body.classList.add('can-mark');
+    pagesEl.addEventListener('pointermove', function (event) {
+      if (ended) return;
+      if (drag) {
+        var now = pointOn(drag.leaf, event);
+        if (!drag.moved && Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y) > 8) drag.moved = true;
+        if (drag.moved) {
+          drag.box = [Math.min(drag.start[0], now[0]), Math.min(drag.start[1], now[1]),
+                      Math.max(drag.start[0], now[0]), Math.max(drag.start[1], now[1])];
+          place(pickMark, drag.box);
+          drag.leaf.marks.appendChild(pickMark);
+          hoverMark.remove();
+        }
+        return;
+      }
+      var leaf = leafOf(event.target);
+      var box = leaf && event.pointerType !== 'touch' ? outlineAt(leaf, pointOn(leaf, event)) : null;
+      if (box && !event.target.closest('.mark.pinned')) {
+        place(hoverMark, box);
+        leaf.marks.appendChild(hoverMark);
+      } else {
+        hoverMark.remove();
+      }
+    });
+    pagesEl.addEventListener('pointerleave', function () { hoverMark.remove(); });
+    pagesEl.addEventListener('pointerdown', function (event) {
+      var leaf = leafOf(event.target);
+      // Dragging a box is for mouse and pen; on touch screens a drag scrolls, and a tap selects a paragraph.
+      if (!leaf || ended || event.button !== 0 || event.pointerType === 'touch' || event.target.closest('.mark.pinned')) return;
+      drag = { leaf: leaf, start: pointOn(leaf, event), x: event.clientX, y: event.clientY, moved: false, box: null };
+    });
+    window.addEventListener('pointerup', function () {
+      if (!drag) return;
+      var done = drag;
+      drag = null;
+      if (!done.moved) return;  // a plain click, handled by the click listener
+      afterDrag = true;
+      setTimeout(function () { afterDrag = false; }, 0);
+      if (done.box && done.box[2] - done.box[0] > 0.02 && done.box[3] - done.box[1] > 0.008) {
+        select(done.leaf, done.box);
+      } else if (selection) {
+        place(pickMark, selection.box);
+        leaves[selection.page - 1].marks.appendChild(pickMark);
+      } else {
+        pickMark.remove();
+      }
+    });
+    pagesEl.addEventListener('click', function (event) {
+      if (afterDrag || ended || event.target.closest('.mark.pinned')) return;
+      var leaf = leafOf(event.target);
+      if (!leaf) return;
+      var box = outlineAt(leaf, pointOn(leaf, event));
+      if (box) select(leaf, box);
+      else if (selection) clearSelection();
+    });
+    noteClear.addEventListener('click', clearSelection);
+  }
+
+  function flash(el) {
+    if (!el) return;
+    el.classList.remove('flash');
+    void el.offsetWidth;  // restart the animation
+    el.classList.add('flash');
+  }
+
+  function drawNoteMarks() {
+    leaves.forEach(function (leaf) {
+      Array.prototype.slice.call(leaf.marks.querySelectorAll('.mark.pinned')).forEach(function (el) { el.remove(); });
+    });
+    notes.forEach(function (note) {
+      var leaf = leaves[note.page - 1];
+      if (!note.box || !leaf) return;
+      var el = makeMark('pinned');
+      el.setAttribute('data-id', String(note.id));
+      el.title = (cfg.isAuthor ? note.author + ': ' : '') + note.body;
+      place(el, note.box);
+      el.addEventListener('click', function (event) { event.stopPropagation(); showNote(note.id); });
+      leaf.marks.insertBefore(el, leaf.marks.firstChild);
+    });
+  }
+
+  // From a highlight on the page to its note in the panel ...
+  function showNote(id) {
+    if (notesPanel.hidden) toggleNotes(true);
+    var item = noteList.querySelector('.note[data-id="' + id + '"]');
+    if (item) {
+      item.scrollIntoView({ block: 'nearest' });
+      flash(item);
+    }
+  }
+
+  // ... and from a note in the panel to its place on the page.
+  function showMark(note) {
+    var leaf = leaves[note.page - 1];
+    if (!leaf) return;
+    if (!note.box) { goTo(note.page); return; }
+    stage.scrollTop = leaf.el.offsetTop + note.box[1] * leaf.el.offsetHeight - stage.clientHeight * 0.3;
+    flash(leaf.marks.querySelector('.mark.pinned[data-id="' + note.id + '"]'));
+  }
+
+  // The author's "Show on page" buttons open the reader at #p=<page>&n=<note>.
+  function openFromHash() {
+    var match = /p=(\d+)(?:&n=(\d+))?/.exec(window.location.hash);
+    if (!match) return;
+    var wanted = match[2] ? notes.filter(function (note) { return note.id === Number(match[2]); })[0] : null;
+    if (wanted) {
+      toggleNotes(true);
+      showMark(wanted);
+      showNote(wanted.id);
+    } else {
+      goTo(Number(match[1]));
+    }
+  }
+
   // ---------------------------------------------------------------- notes
   function markNotes() {
     Array.prototype.forEach.call(noteList.children, function (node) {
@@ -282,18 +479,23 @@
       empty.textContent = cfg.isAuthor ? 'No reviewer has left feedback on this chapter yet.'
         : 'No notes yet. Notes are private between you and the author.';
       noteList.appendChild(empty);
+      drawNoteMarks();
       return;
     }
-    notes.slice().sort(function (a, b) { return a.page - b.page || a.id - b.id; }).forEach(function (note) {
+    var order = function (a, b) {
+      return a.page - b.page || (a.box ? a.box[1] : -1) - (b.box ? b.box[1] : -1) || a.id - b.id;
+    };
+    notes.slice().sort(order).forEach(function (note) {
       var item = document.createElement('div');
       item.className = 'note';
       item.setAttribute('data-page', String(note.page));
+      item.setAttribute('data-id', String(note.id));
       var meta = document.createElement('div');
       meta.className = 'note-meta';
       var jump = document.createElement('button');
       jump.type = 'button';
-      jump.textContent = 'Page ' + note.page + (cfg.isAuthor ? ' · ' + note.author : '');
-      jump.addEventListener('click', function () { goTo(note.page); });
+      jump.textContent = 'Page ' + note.page + (note.box ? ' · passage' : '') + (cfg.isAuthor ? ' · ' + note.author : '');
+      jump.addEventListener('click', function () { showMark(note); });
       meta.appendChild(jump);
       if (note.mine) {
         var del = document.createElement('button');
@@ -315,10 +517,17 @@
       body.className = 'note-body';
       body.textContent = note.body;
       item.appendChild(meta);
+      if (note.quote) {
+        var quote = document.createElement('div');
+        quote.className = 'note-quote';
+        quote.textContent = '\u201c' + (note.quote.length > 260 ? note.quote.slice(0, 260) + '\u2026' : note.quote) + '\u201d';
+        item.appendChild(quote);
+      }
       item.appendChild(body);
       noteList.appendChild(item);
     });
     markNotes();
+    drawNoteMarks();
   }
 
   function toggleNotes(open) {
@@ -336,11 +545,13 @@
       var field = document.getElementById('note-body');
       var text = field.value.trim();
       if (!text) return;
-      post(cfg.commentsUrl, { page: current, body: text }).then(function (response) {
+      var note = selection ? { page: selection.page, body: text, box: selection.box } : { page: current, body: text };
+      post(cfg.commentsUrl, note).then(function (response) {
         return response.json().then(function (data) {
           if (response.ok) {
             notes.push(data);
             field.value = '';
+            clearSelection();
             renderNotes();
           } else if (response.status === 403 && data.error) {
             endAccess(data.message);
@@ -354,7 +565,7 @@
 
   fetch(cfg.commentsUrl, { credentials: 'same-origin', cache: 'no-store' })
     .then(function (response) { return response.ok ? response.json() : []; })
-    .then(function (list) { notes = list; renderNotes(); })
+    .then(function (list) { notes = list; renderNotes(); openFromHash(); })
     .catch(function () {});
 
   // ----------------------------------------------------------------- start

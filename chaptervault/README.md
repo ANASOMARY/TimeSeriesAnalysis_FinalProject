@@ -15,13 +15,13 @@ again whenever you like. Reviewers read in their browser; the file itself never 
 | **Upload selected chapters** | PDF, Word (`.docx`, `.doc`), OpenDocument, RTF, EPUB or plain text, several files at once. Uploading the whole book? Give a page range (`45-78`) and only those pages are kept. |
 | **Encrypted storage** | Every chapter is encrypted with AES-256-GCM before it touches the disk. |
 | **No file download** | Reviewers receive pages as images rendered on the server. There is no PDF to save, forward or open elsewhere. |
-| **Personal watermark** | Each page is stamped with the reviewer's name, email address, the time and their IP address, so a leaked screenshot points at its source. |
+| **Personal watermark** | Each page is stamped with text you write, by default the reviewer's name, email address, the time and their IP address, so a leaked screenshot points at its source. |
 | **Per-reviewer rules** | For each reviewer and chapter: a start date, an end date, a limit on the number of opens, and whether they may leave notes. |
 | **Instant revocation** | Revoke one grant, suspend a chapter or suspend a reviewer. An open reader closes within about 20 seconds. |
 | **Device locking** | An account works on a limited number of devices (2 by default) and only one session at a time, so a login cannot be passed around. |
 | **Printing and copying blocked** | Printing produces a blank page; text selection, right-click, save and copy are disabled; the page is hidden when the window loses focus. |
 | **Audit trail** | Sign-ins, every chapter opened, every page viewed, reading time, and each blocked print or copy attempt. Exportable as a spreadsheet. |
-| **Reviewer feedback** | Reviewers attach notes to pages. You see them per chapter and can export them. |
+| **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page). You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
 | **Confidentiality terms** | Reviewers must accept your terms before they can open anything (editable, optional). |
 
 ## Run it on your computer
@@ -110,10 +110,17 @@ aws cloudformation delete-stack --stack-name chaptervault
 
 Later on:
 
-- **Update to the latest code, or change the address.** In the EC2 console select the server,
-  choose *Connect → Session Manager*, and run
-  `sudo bash /opt/chaptervault/src/chaptervault/deploy/aws/deploy.sh`. To change the address, first
-  edit `DOMAIN=` in `/opt/chaptervault/config`. Chapters and accounts are kept.
+- **Update to the latest code.** In CloudShell, in the same region:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ANASOMARY/TimeSeriesAnalysis_FinalProject/ccr-ad86fbe7-utaqxg/chaptervault/deploy/aws/update.sh | bash
+  ```
+
+  Chapters, accounts, notes and settings are kept. The same thing by hand: in the EC2 console
+  select the server, choose *Connect → Session Manager*, and run
+  `sudo bash /opt/chaptervault/src/chaptervault/deploy/aws/deploy.sh`.
+- **Change the address.** In Session Manager, edit `DOMAIN=` in `/opt/chaptervault/config`, then run
+  the `deploy.sh` command above.
 - **Remove everything.** `aws cloudformation delete-stack --stack-name chaptervault` deletes the
   server and every chapter on it.
 
@@ -146,8 +153,11 @@ Or run `python run.py --host 0.0.0.0` behind any reverse proxy that terminates T
 | `CHAPTERVAULT_SETUP_TOKEN` | Fixes the one-time setup token (32+ characters) so the setup link survives restarts | random per start |
 | `PORT`, `CHAPTERVAULT_HOST` | Listening port and address | `8000`, `127.0.0.1` |
 
-Defaults for new grants, the watermark text and strength, and the confidentiality terms are edited
-in the app under **Settings**.
+Defaults for new grants, the watermark and the confidentiality terms are edited in the app under
+**Settings**. The watermark is two texts you write yourself: one repeated across the page (up to
+three lines) and one line at the foot. Words in braces are filled in for each reader: `{name}`,
+`{email}`, `{date}`, `{ip}`, `{ref}`, `{book}` and `{author}`. *Preview as a reviewer sees it* shows
+the result with a stand-in reviewer.
 
 ## Backups
 

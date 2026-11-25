@@ -20,7 +20,9 @@
     <div class="notes-head"><h2>{{ 'Reviewer feedback' if config.isAuthor else 'Your notes for the author' }}</h2><button type="button" class="vbtn" id="notes-close" aria-label="Close notes">×</button></div>
     {% if config.canComment %}
     <form id="note-form">
-      <label for="note-body">Note on page <strong id="note-page">1</strong></label>
+      <p class="note-hint">Click a paragraph on the page, or drag a box around any passage, to pin your note to it.</p>
+      <label for="note-body">Note on page <strong id="note-page">1</strong> <span id="note-scope">· whole page</span></label>
+      <button type="button" class="note-clear" id="note-clear" hidden>Clear selection (note the whole page)</button>
       <textarea id="note-body" maxlength="5000" rows="4" placeholder="What works, what does not, what confused you…" required></textarea>
       <button class="vbtn solid">Add note</button>
     </form>

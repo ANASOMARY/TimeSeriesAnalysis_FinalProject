@@ -115,7 +115,10 @@ CREATE TABLE IF NOT EXISTS comments (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   page INTEGER NOT NULL,
   body TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- Optional marked area the note is pinned to, as fractions of the page, and the text under it.
+  x0 REAL, y0 REAL, x1 REAL, y1 REAL,
+  quote TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -180,9 +183,24 @@ def run(sql: str, *args) -> sqlite3.Cursor:
     return get().execute(sql, args)
 
 
+# Columns added after the first release. Existing databases gain them on start-up.
+ADDED_COLUMNS = {
+    "comments": {"x0": "REAL", "y0": "REAL", "x1": "REAL", "y1": "REAL", "quote": "TEXT NOT NULL DEFAULT ''"},
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in ADDED_COLUMNS.items():
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, declaration in columns.items():
+            if name not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+
 def init_app(app) -> None:
     conn = connect(app.config["VAULT"].db_path)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.close()
 
     @app.teardown_appcontext
@@ -211,15 +229,26 @@ DEFAULT_SETTINGS = {
     "default_max_devices": "2",
     "require_nda": "1",
     "nda_text": DEFAULT_NDA,
-    "watermark_notice": "Confidential review copy - do not copy or distribute",
+    # The author writes both watermark texts. Placeholders in braces are filled in per reader.
+    "watermark_text": "{name}  ·  {email}\n{date}  ·  {ip}",
+    "watermark_footer": "Confidential review copy - do not copy or distribute  ·  Issued to {email}  ·  {date}  ·  Ref {ref}",
     "watermark_opacity": "14",
 }
+
+_OLD_NOTICE = "Confidential review copy - do not copy or distribute"
 
 
 def settings() -> dict[str, str]:
     if "settings" not in g:
         values = dict(DEFAULT_SETTINGS)
-        values.update({r["key"]: r["value"] for r in all("SELECT key, value FROM settings")})
+        stored = {r["key"]: r["value"] for r in all("SELECT key, value FROM settings")}
+        values.update(stored)
+        # Before the footer became fully editable, only its opening notice was stored. Carry a
+        # customised notice over into the new footer text.
+        notice = stored.get("watermark_notice")
+        if "watermark_footer" not in stored and notice is not None and notice != _OLD_NOTICE:
+            values["watermark_footer"] = "  ·  ".join(
+                part for part in (notice.strip(), "Issued to {email}", "{date}", "Ref {ref}") if part)
         g.settings = values
     return g.settings
 

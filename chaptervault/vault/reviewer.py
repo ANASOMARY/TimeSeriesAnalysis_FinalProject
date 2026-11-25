@@ -1,6 +1,7 @@
 """The reviewer's library and the secure page-image reader."""
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -193,6 +194,7 @@ def viewer(view_id: int):
         "pingUrl": url_for("reviewer.ping", view_id=view_id),
         "eventUrl": url_for("reviewer.client_event", view_id=view_id),
         "commentsUrl": url_for("reviewer.comments", view_id=view_id),
+        "blocksUrl": url_for("reviewer.blocks", view_id=view_id, number=0).rsplit("/", 1)[0] + "/",
         "exitUrl": _exit_url() if grant is not None else url_for("admin.chapter", doc_id=doc["id"]),
         "csrf": g.session["csrf"],
         "canComment": bool(grant is not None and grant["allow_comments"]),
@@ -201,18 +203,34 @@ def viewer(view_id: int):
     return render_template("viewer.html", doc=doc, config=config, grant=grant)
 
 
-def _watermark(view) -> documents.Watermark:
-    settings = db.settings()
+WATERMARK_FIELDS = ("name", "email", "date", "ip", "ref", "book", "author")
+_PLACEHOLDER = re.compile(r"\{(%s)\}" % "|".join(WATERMARK_FIELDS))
+MAX_WATERMARK_LINES = 3
+
+
+def _fill(template: str, values: dict[str, str]) -> str:
+    """Replace the known {placeholders}; anything else in the author's text is left exactly as typed."""
+    return _PLACEHOLDER.sub(lambda match: values[match.group(1)], template).strip(" ·|-\t")
+
+
+def watermark_for(view, user, settings) -> documents.Watermark:
+    """Build the watermark for one reading session from the texts the author wrote in Settings."""
     opacity = max(4, min(40, int(settings["watermark_opacity"] or 14))) / 100
-    notice = settings["watermark_notice"].strip()
+    date, _, ip = view["stamp"].partition("  ·  ")
     if view["grant_id"] is None:
-        lines = ("AUTHOR PREVIEW", g.user["email"])
-        footer = f"Author preview  ·  {view['stamp']}"
+        # The author's preview shows what a reviewer will get, so it uses stand-in reader details
+        # rather than the author's own name and sign-in address.
+        values = {"name": "Reviewer Name", "email": "reviewer@example.com", "ip": "203.0.113.7"}
     else:
-        lines = (f"{g.user['name']}  ·  {g.user['email']}", view["stamp"])
-        footer = "  ·  ".join(part for part in (
-            notice, f"Issued to {g.user['email']}", view["stamp"], f"Ref V{view['id']:05d}") if part)
-    return documents.Watermark(lines=lines, footer=footer, opacity=opacity)
+        values = {"name": user["name"], "email": user["email"], "ip": ip}
+    values.update(date=date, ref=f"V{view['id']:05d}", book=settings["book_title"], author=settings["author_name"])
+    lines = [_fill(line, values) for line in settings["watermark_text"].splitlines()]
+    return documents.Watermark(lines=tuple(line for line in lines if line)[:MAX_WATERMARK_LINES],
+                               footer=_fill(settings["watermark_footer"], values), opacity=opacity)
+
+
+def _watermark(view) -> documents.Watermark:
+    return watermark_for(view, g.user, db.settings())
 
 
 @bp.get("/view/<int:view_id>/page/<int:number>")
@@ -282,9 +300,46 @@ def client_event(view_id: int):
 
 # ----------------------------------------------------------------- feedback
 
-def _comment_json(row) -> dict:
-    return {"id": row["id"], "page": row["page"], "body": row["body"], "author": row["name"],
-            "created": row["created_at"], "mine": row["user_id"] == g.user["id"]}
+def _comment_json(row, for_author: bool) -> dict:
+    data = {"id": row["id"], "page": row["page"], "body": row["body"], "author": row["name"],
+            "created": row["created_at"], "mine": row["user_id"] == g.user["id"],
+            "box": [row["x0"], row["y0"], row["x1"], row["y1"]] if row["x0"] is not None else None}
+    if for_author:
+        # The quoted passage goes to the author only. Sending it to reviewers would hand them the
+        # manuscript's text one marked paragraph at a time.
+        data["quote"] = row["quote"]
+    return data
+
+
+def _clean_box(value) -> list[float] | None:
+    """Validate a marked area sent by the reader: four fractions of the page, left/top/right/bottom."""
+    if value is None:
+        return None
+    if (not isinstance(value, list) or len(value) != 4
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
+        raise ValueError
+    x0, y0, x1, y1 = (min(1.0, max(0.0, float(v))) for v in value)
+    if x1 - x0 < 0.005 or y1 - y0 < 0.003:
+        raise ValueError
+    return [round(v, 4) for v in (x0, y0, x1, y1)]
+
+
+@bp.get("/view/<int:view_id>/blocks/<int:number>")
+@api
+def blocks(view_id: int, number: int):
+    """Paragraph outlines for one page, so a reviewer can pin a note to a paragraph by clicking it."""
+    view, doc, grant, code, message = _view_state(view_id)
+    if code != "ok":
+        return _deny(view, doc, code, message, number)
+    if not 1 <= number <= doc["page_count"]:
+        abort(404)
+    if grant is None or not grant["allow_comments"]:
+        return jsonify(blocks=[])
+    try:
+        outlines = documents.page_blocks(current_app.config["VAULT"], current_app.config["BLOB_KEY"], doc, number - 1)
+    except (OSError, ValueError, RuntimeError):
+        outlines = []
+    return jsonify(blocks=outlines)
 
 
 @bp.route("/view/<int:view_id>/comments", methods=["GET", "POST"])
@@ -299,20 +354,35 @@ def comments(view_id: int):
         payload = request.get_json(silent=True) or {}
         body = str(payload.get("body", "")).strip()
         page_no = payload.get("page")
-        if not body or len(body) > MAX_COMMENT or not isinstance(page_no, int) or not 1 <= page_no <= doc["page_count"]:
+        try:
+            box = _clean_box(payload.get("box"))
+        except ValueError:
+            return jsonify(error="invalid", message="That selection could not be used. Select the passage again."), 400
+        if (not body or len(body) > MAX_COMMENT or isinstance(page_no, bool) or not isinstance(page_no, int)
+                or not 1 <= page_no <= doc["page_count"]):
             return jsonify(error="invalid", message=f"Write a note of up to {MAX_COMMENT} characters."), 400
-        comment_id = db.run("INSERT INTO comments (document_id, user_id, page, body, created_at) VALUES (?,?,?,?,?)",
-                            doc["id"], g.user["id"], page_no, body, db.now_iso()).lastrowid
+        quote = ""
+        if box is not None:
+            try:
+                quote = documents.passage_text(current_app.config["VAULT"], current_app.config["BLOB_KEY"],
+                                               doc, page_no - 1, box)
+            except (OSError, ValueError, RuntimeError):
+                quote = ""
+        x0, y0, x1, y1 = box or (None, None, None, None)
+        comment_id = db.run(
+            "INSERT INTO comments (document_id, user_id, page, body, created_at, x0, y0, x1, y1, quote) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            doc["id"], g.user["id"], page_no, body, db.now_iso(), x0, y0, x1, y1, quote).lastrowid
         audit.log("comment_added", document=doc, view_id=view_id, page=page_no)
         row = db.one("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?", comment_id)
-        return jsonify(_comment_json(row)), 201
+        return jsonify(_comment_json(row, for_author=False)), 201
     if grant is None:  # the author sees everyone's notes while previewing
         rows = db.all("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id "
                       "WHERE c.document_id = ? ORDER BY c.page, c.id", doc["id"])
     else:
         rows = db.all("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id "
                       "WHERE c.document_id = ? AND c.user_id = ? ORDER BY c.page, c.id", doc["id"], g.user["id"])
-    return jsonify([_comment_json(r) for r in rows])
+    return jsonify([_comment_json(r, for_author=grant is None) for r in rows])
 
 
 @bp.post("/view/<int:view_id>/comments/<int:comment_id>/delete")

@@ -177,8 +177,8 @@ def store(cfg, key: bytes, blob_name: str, pdf: bytes) -> None:
     tmp.replace(path)
 
 
-def remove(cfg, blob_name: str, doc_id: int) -> None:
-    evict(doc_id)
+def remove(cfg, blob_name: str) -> None:
+    evict(blob_name)
     (cfg.blob_dir / blob_name).unlink(missing_ok=True)
 
 
@@ -193,29 +193,32 @@ class Watermark:
 
 # MuPDF documents are not thread-safe, so every open/render is serialised.
 _lock = threading.Lock()
-_open_docs: "OrderedDict[int, pymupdf.Document]" = OrderedDict()
+# Keyed by the stored file's random name, which is unique to one upload: a replaced or deleted
+# chapter can never be served from a stale entry.
+_open_docs: "OrderedDict[str, pymupdf.Document]" = OrderedDict()
 _OPEN_LIMIT = 4
 
 
-def evict(doc_id: int) -> None:
+def evict(blob_name: str) -> None:
     with _lock:
-        doc = _open_docs.pop(doc_id, None)
+        doc = _open_docs.pop(blob_name, None)
         if doc is not None:
             doc.close()
 
 
 def _document(cfg, key: bytes, row) -> pymupdf.Document:
-    doc = _open_docs.get(row["id"])
+    name = row["blob_name"]
+    doc = _open_docs.get(name)
     if doc is None:
         blob = (cfg.blob_dir / row["blob_name"]).read_bytes()
         pdf = security.decrypt(key, blob, row["blob_name"].encode())
         doc = pymupdf.open(stream=pdf, filetype="pdf")
-        _open_docs[row["id"]] = doc
+        _open_docs[name] = doc
         while len(_open_docs) > _OPEN_LIMIT:
             _, old = _open_docs.popitem(last=False)
             old.close()
     else:
-        _open_docs.move_to_end(row["id"])
+        _open_docs.move_to_end(name)
     return doc
 
 
@@ -240,6 +243,94 @@ def render_page(cfg, key: bytes, row, index: int, width: int, watermark: Waterma
     out = io.BytesIO()
     image.save(out, "JPEG", quality=86, subsampling=0)
     return out.getvalue()
+
+
+def _paragraphs(lines: list[tuple[float, float, float, float]], page_width: float) -> list[list[float]]:
+    """Group text lines, given in reading order, into paragraph rectangles.
+
+    PDFs disagree about what a "block" is: some store a paragraph per block, others a line per
+    block. So paragraphs are rebuilt from lines. A line starts a new paragraph when it is set
+    apart by extra vertical space, sits in a different column, or is indented relative to the
+    body of the paragraph above it (the usual book convention).
+    """
+    indent = page_width * 0.012
+    groups: list[dict] = []
+    for x0, y0, x1, y1 in lines:
+        height = y1 - y0
+        current = groups[-1] if groups else None
+        joins = False
+        if current is not None:
+            last = current["lines"][-1]
+            same_row = min(y1, last[3]) - max(y0, last[1]) > 0.5 * min(height, last[3] - last[1])
+            gap = y0 - last[3]
+            overlap = min(x1, current["x1"]) - max(x0, current["x0"])
+            if same_row:
+                joins = x0 - last[2] < 3 * height          # the rest of a line split into pieces
+            elif -0.4 * height <= gap <= 0.65 * max(height, last[3] - last[1]) and overlap > 0:
+                body = current["lines"][1:]
+                # With two or more lines we know where the body's left edge is; a line starting
+                # further right than that opens a new paragraph.
+                joins = not body or x0 <= min(line[0] for line in body) + indent
+        if joins:
+            current["lines"].append((x0, y0, x1, y1))
+            current["x0"], current["x1"] = min(current["x0"], x0), max(current["x1"], x1)
+        else:
+            groups.append({"lines": [(x0, y0, x1, y1)], "x0": x0, "x1": x1})
+    return [[g["x0"], min(line[1] for line in g["lines"]), g["x1"], max(line[3] for line in g["lines"])]
+            for g in groups]
+
+
+def page_blocks(cfg, key: bytes, row, index: int) -> list[list[float]]:
+    """Outlines of the paragraphs on a page, as fractions of its width and height.
+
+    Only rectangles are returned, never text, so the reader can let someone point at a
+    paragraph without any of the manuscript's text reaching their browser.
+    """
+    with _lock:
+        page = _document(cfg, key, row)[index]
+        width, height = page.rect.width, page.rect.height
+        lines = []
+        for block in page.get_text("dict")["blocks"]:
+            if block.get("type") != 0:
+                continue  # images
+            for line in block["lines"]:
+                if not any(span["text"].strip() for span in line["spans"]):
+                    continue
+                # Text coordinates refer to the unrotated page; the image shows the rotated one.
+                shown = (pymupdf.Rect(line["bbox"]) * page.rotation_matrix).normalize()
+                lines.append((shown.x0, shown.y0, shown.x1, shown.y1))
+    boxes = []
+    for x0, y0, x1, y1 in _paragraphs(lines, width):
+        box = [max(0.0, x0 / width), max(0.0, y0 / height), min(1.0, x1 / width), min(1.0, y1 / height)]
+        if box[2] - box[0] > 0.01 and box[3] - box[1] > 0.004:
+            boxes.append([round(v, 4) for v in box])
+    return boxes
+
+
+def passage_text(cfg, key: bytes, row, index: int, box: list[float], limit: int = 600) -> str:
+    """The text under a marked area of a page, for showing the author what a note refers to.
+
+    Whole lines are quoted: a line counts as marked when the area crosses its middle, so a box
+    dragged a little short of the margins still yields readable sentences rather than cut words.
+    """
+    picked = []
+    with _lock:
+        page = _document(cfg, key, row)[index]
+        width, height = page.rect.width, page.rect.height
+        for block in page.get_text("dict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block["lines"]:
+                shown = (pymupdf.Rect(line["bbox"]) * page.rotation_matrix).normalize()
+                x0, y0, x1, y1 = shown.x0 / width, shown.y0 / height, shown.x1 / width, shown.y1 / height
+                if shown.width >= shown.height:   # ordinary horizontal line
+                    marked = box[1] <= (y0 + y1) / 2 <= box[3] and min(x1, box[2]) > max(x0, box[0])
+                else:                             # a line running up or down a rotated page
+                    marked = box[0] <= (x0 + x1) / 2 <= box[2] and min(y1, box[3]) > max(y0, box[1])
+                if marked:
+                    picked.append("".join(span["text"] for span in line["spans"]))
+    text = " ".join(" ".join(picked).split())
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")
 
 
 @lru_cache(maxsize=32)

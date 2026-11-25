@@ -12,7 +12,7 @@ from flask import (Blueprint, Response, abort, current_app, g, redirect, render_
 
 from . import access, audit, db, documents, security
 from .auth import create_invite, end_sessions, flash, invite_link
-from .reviewer import start_view
+from .reviewer import MAX_WATERMARK_LINES, start_view
 
 bp = Blueprint("admin", __name__)
 
@@ -233,7 +233,7 @@ def chapter(doc_id: int):
                  if u["id"] not in granted_ids]
     feedback = db.all(
         "SELECT c.*, u.name, u.email FROM comments c JOIN users u ON u.id = c.user_id "
-        "WHERE c.document_id = ? ORDER BY c.page, c.id", doc_id)
+        "WHERE c.document_id = ? ORDER BY c.page, c.y0, c.id", doc_id)
     events = db.all("SELECT * FROM events WHERE document_id = ? AND kind != 'page_view' ORDER BY id DESC LIMIT 15",
                     doc_id)
     return render_template("admin/chapter.html", doc=doc, grants=grants, available=available,
@@ -277,7 +277,7 @@ def chapter_replace(doc_id: int):
         name[:255], result["source_format"], result["page_count"], result["pages_json"], len(result["pdf"]),
         blob_name, result["sha256"], doc_id)
     db.run("DELETE FROM views WHERE document_id = ?", doc_id)
-    documents.remove(cfg, doc["blob_name"], doc_id)
+    documents.remove(cfg, doc["blob_name"])
     audit.log("doc_uploaded", document=doc, detail=f"replaced with {name}, {result['page_count']} pages")
     flash(f"The chapter file was replaced ({result['page_count']} pages). Existing access rules are unchanged.")
     return redirect(url_for("admin.chapter", doc_id=doc_id))
@@ -299,7 +299,7 @@ def chapter_delete(doc_id: int):
     doc = _doc_or_404(doc_id)
     audit.log("doc_deleted", document=doc)
     db.run("DELETE FROM documents WHERE id = ?", doc_id)
-    documents.remove(current_app.config["VAULT"], doc["blob_name"], doc_id)
+    documents.remove(current_app.config["VAULT"], doc["blob_name"])
     flash(f"“{doc['title']}” and all access to it were permanently deleted.")
     return redirect(url_for("admin.chapters"))
 
@@ -309,17 +309,22 @@ def chapter_preview(doc_id: int):
     doc = _doc_or_404(doc_id)
     view_id = start_view(doc, None)
     audit.log("doc_preview", document=doc, view_id=view_id)
-    return redirect(url_for("reviewer.viewer", view_id=view_id))
+    target = url_for("reviewer.viewer", view_id=view_id)
+    # "Show on page" buttons in the feedback list open the preview at one particular note.
+    page, note = request.form.get("page", type=int), request.form.get("note", type=int)
+    if page:
+        target += f"#p={page}" + (f"&n={note}" if note else "")
+    return redirect(target)
 
 
 @bp.get("/chapters/<int:doc_id>/feedback.csv")
 def chapter_feedback_csv(doc_id: int):
     doc = _doc_or_404(doc_id)
     rows = db.all(
-        "SELECT c.page, u.name, u.email, c.created_at, c.body FROM comments c JOIN users u ON u.id = c.user_id "
-        "WHERE c.document_id = ? ORDER BY c.page, c.id", doc_id)
-    return _csv(f"feedback-chapter-{doc['id']}.csv", ["Page", "Reviewer", "Email", "Written (UTC)", "Feedback"],
-                [tuple(r) for r in rows])
+        "SELECT c.page, u.name, u.email, c.created_at, c.quote, c.body FROM comments c "
+        "JOIN users u ON u.id = c.user_id WHERE c.document_id = ? ORDER BY c.page, c.y0, c.id", doc_id)
+    return _csv(f"feedback-chapter-{doc['id']}.csv",
+                ["Page", "Reviewer", "Email", "Written (UTC)", "Passage", "Feedback"], [tuple(r) for r in rows])
 
 
 # ---------------------------------------------------------------- reviewers
@@ -619,13 +624,18 @@ def settings():
             if not value.isdigit() or not low <= int(value) <= high:
                 problems.append(f"{label} must be a number from {low} to {high}"
                                 + (" (or blank for no limit)." if blank_ok else "."))
+        watermark_lines = [line.strip() for line in form.get("watermark_text", "").replace("\r", "").split("\n")]
+        watermark_lines = [line for line in watermark_lines if line]
+        if len(watermark_lines) > MAX_WATERMARK_LINES or any(len(line) > 120 for line in watermark_lines):
+            problems.append(f"The watermark can have up to {MAX_WATERMARK_LINES} lines of up to 120 characters each.")
         if problems:
             for problem in problems:
                 flash(problem, "bad")
         else:
             for key in ("book_title", "author_name", "default_expiry_days", "default_max_views",
-                        "default_max_devices", "watermark_notice", "watermark_opacity"):
+                        "default_max_devices", "watermark_footer", "watermark_opacity"):
                 db.set_setting(key, form.get(key, "").strip()[:300])
+            db.set_setting("watermark_text", "\n".join(watermark_lines))
             db.set_setting("nda_text", form.get("nda_text", "").strip()[:8000])
             db.set_setting("require_nda", "1" if form.get("require_nda") == "1" else "0")
             audit.log("settings_updated")

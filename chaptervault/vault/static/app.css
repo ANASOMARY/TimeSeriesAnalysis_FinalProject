@@ -215,9 +215,12 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
 .gate-note { margin: 18px 0 0; font-size: 13px; color: var(--muted); }
 .terms { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; white-space: pre-wrap; font: 15px/1.6 var(--serif); margin-bottom: 18px; max-height: 46vh; overflow: auto; }
 .quote { white-space: pre-wrap; }
+span.quote { display: block; }
+.passage { display: block; border-left: 3px solid var(--accent); padding: 1px 0 1px 10px; margin-bottom: 6px; color: var(--muted); font: italic 14px/1.45 var(--serif); }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; font-size: 14px; }
 dl.facts dt { color: var(--muted); }
 dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+code { font: 13px var(--mono); background: #efeae0; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
 .fine { font-size: 13px; color: var(--muted); margin: 10px 0 0; overflow-wrap: anywhere; }
 .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 16px; }
 .filters label { min-width: 170px; }

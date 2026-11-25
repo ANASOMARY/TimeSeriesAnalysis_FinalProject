@@ -465,8 +465,172 @@ def test_every_author_page_renders(app, author):
         assert author.get(path).status_code == 200, path
     saved = author.post("/admin/settings", {"book_title": "The Lighthouse", "author_name": "Ann Author",
                                             "default_expiry_days": "14", "default_max_views": "",
-                                            "default_max_devices": "2", "watermark_notice": "Review copy",
-                                            "watermark_opacity": "18", "require_nda": "1", "nda_text": "Keep it secret."},
+                                            "default_max_devices": "2", "watermark_footer": "Review copy",
+                                            "watermark_text": "{name}", "watermark_opacity": "18",
+                                            "require_nda": "1", "nda_text": "Keep it secret."},
                         follow_redirects=True)
     assert "Settings saved." in saved.get_data(as_text=True)
     assert "The Lighthouse" in Browser(app).get("/login").get_data(as_text=True)
+
+
+# ------------------------------------------------- notes pinned to a passage
+
+def test_notes_can_be_pinned_to_a_passage(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    sam = add_reviewer(app, author, "Sam Skimmer", "sam@example.com", documents_=["1"])
+    author.post("/admin/grants/2/update", {"action": "save"})        # Sam may read but not comment
+    rae_view, sam_view = open_chapter(rae), open_chapter(sam)
+
+    outlines = rae.get(f"{rae_view}/blocks/2").get_json()["blocks"]
+    assert len(outlines) == 1 and all(0 <= v <= 1 for v in outlines[0])
+    assert SECRET_TEXT not in rae.get(f"{rae_view}/blocks/2").get_data(as_text=True)   # rectangles only
+    assert sam.get(f"{sam_view}/blocks/2").get_json() == {"blocks": []}
+    assert rae.get(f"{rae_view}/blocks/9").status_code == 404
+
+    created = rae.json(f"{rae_view}/comments", {"page": 2, "body": "This line is the hook.", "box": outlines[0]})
+    assert created.status_code == 201
+    note = created.get_json()
+    assert note["box"] == outlines[0] and "quote" not in note
+    listed = rae.get(f"{rae_view}/comments").get_json()
+    assert listed[0]["box"] == outlines[0] and "quote" not in listed[0]          # never sent to reviewers
+
+    for bad in ([0.1, 0.1, 0.1, 0.1], [0.2, 0.2], "everything", [0.1, 0.1, "x", 0.5], [True, 0, 1, 1]):
+        assert rae.json(f"{rae_view}/comments", {"page": 2, "body": "x", "box": bad}).status_code == 400
+
+    # The author sees which passage the note is about, in the console, the export and the preview.
+    passage = f"{SECRET_TEXT} - page 2"
+    assert passage in author.get("/admin/chapters/1").get_data(as_text=True)
+    assert passage in author.get("/admin/chapters/1/feedback.csv").get_data(as_text=True)
+    preview = author.post("/admin/chapters/1/preview", {"page": "2", "note": str(note["id"])}).headers["Location"]
+    assert preview.endswith(f"#p=2&n={note['id']}")
+    seen = author.get(preview.split("#")[0] + "/comments").get_json()
+    assert seen[0]["quote"] == passage and seen[0]["box"] == outlines[0]
+
+
+def test_a_roughly_dragged_box_quotes_whole_lines(app, author):
+    source = pymupdf.open()
+    page = source.new_page(width=400, height=600)
+    for i, text in enumerate(("The first line of the paragraph runs here", "and the second line follows it closely",
+                              "while the third line ends the thought.")):
+        page.insert_text((50, 100 + i * 16), text, fontsize=11)
+    upload(author, data=source.tobytes())
+    with app.app_context():
+        doc = db.one("SELECT * FROM documents")
+        cfg, key = app.config["VAULT"], app.config["BLOB_KEY"]
+        # A box drawn short of both margins, covering lines two and three only.
+        rough = [0.25, 108 / 600, 0.45, 138 / 600]
+        assert documents.passage_text(cfg, key, doc, 0, rough) == (
+            "and the second line follows it closely while the third line ends the thought.")
+        assert documents.passage_text(cfg, key, doc, 0, [0.1, 0.8, 0.9, 0.9]) == ""     # empty part of the page
+
+
+def test_whole_page_notes_still_work(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    created = rae.json(f"{view_url}/comments", {"page": 3, "body": "Pacing drags here."})
+    assert created.status_code == 201 and created.get_json()["box"] is None
+    assert "Pacing drags here." in author.get("/admin/chapters/1").get_data(as_text=True)
+
+
+def test_passages_line_up_on_rotated_pages(app, author):
+    source = pymupdf.open()
+    page = source.new_page(width=400, height=600)
+    page.insert_textbox(pymupdf.Rect(50, 60, 350, 140), "A sideways paragraph for the rotation test.", fontsize=12)
+    page.set_rotation(90)
+    upload(author, data=source.tobytes())
+    with app.app_context():
+        doc = db.one("SELECT * FROM documents")
+        cfg, key = app.config["VAULT"], app.config["BLOB_KEY"]
+        (box,) = documents.page_blocks(cfg, key, doc, 0)
+        assert documents.passage_text(cfg, key, doc, 0, box) == "A sideways paragraph for the rotation test."
+        # The outline must sit on the ink of the page as rendered (rotated: 600 wide, 400 tall).
+        image = pymupdf.Pixmap(documents.render_page(cfg, key, doc, 0, 600, None))
+    inside = outside = 0
+    for y in range(0, image.height, 3):
+        for x in range(0, image.width, 3):
+            if image.pixel(x, y)[0] < 120:
+                if box[0] <= x / image.width <= box[2] and box[1] <= y / image.height <= box[3]:
+                    inside += 1
+                else:
+                    outside += 1
+    assert inside > 20 and outside == 0
+
+
+def test_existing_database_gains_the_new_columns(tmp_path):
+    """A vault created before pinned notes existed must upgrade in place and keep its notes."""
+    import sqlite3
+    first = create_app(tmp_path / "data")
+    path = first.config["VAULT"].db_path
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "DROP TABLE comments;"
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+        "page INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);"
+        "INSERT INTO comments (document_id, user_id, page, body, created_at) VALUES (1, 1, 4, 'an old note', '2026-01-01T00:00:00Z');")
+    conn.commit()
+    conn.close()
+
+    upgraded = create_app(tmp_path / "data")
+    rows = query(upgraded, "SELECT * FROM comments")
+    assert rows == [{"id": 1, "document_id": 1, "user_id": 1, "page": 4, "body": "an old note",
+                     "created_at": "2026-01-01T00:00:00Z", "x0": None, "y0": None, "x1": None, "y1": None, "quote": ""}]
+    create_app(tmp_path / "data")      # starting again changes nothing
+
+
+# ------------------------------------------------ author-written watermark text
+
+def test_author_writes_the_watermark_text(app, author):
+    from vault import reviewer
+    view = {"id": 7, "grant_id": 3, "stamp": "25 Nov 2026 18:21 UTC  ·  198.51.100.4"}
+    rae = {"name": "Rae Reader", "email": "rae@example.com"}
+    settings = dict(db.DEFAULT_SETTINGS, book_title="The Lighthouse", author_name="Ann Author")
+
+    default = reviewer.watermark_for(view, rae, settings)
+    assert default.lines == ("Rae Reader  ·  rae@example.com", "25 Nov 2026 18:21 UTC  ·  198.51.100.4")
+    assert "Issued to rae@example.com" in default.footer and default.footer.endswith("Ref V00007")
+
+    settings.update(watermark_text="Property of {author} - {book}\nLicensed to {name}\n{unknown} {email.__class__}",
+                    watermark_footer="")
+    custom = reviewer.watermark_for(view, rae, settings)
+    assert custom.lines == ("Property of Ann Author - The Lighthouse", "Licensed to Rae Reader",
+                            "{unknown} {email.__class__}")       # only the known words are filled in
+    assert custom.footer == ""
+
+    settings.update(watermark_text="", watermark_footer="")
+    assert reviewer.watermark_for(view, rae, settings).lines == ()
+
+    # The author's own preview shows a stand-in reviewer, never the author's sign-in address.
+    preview = reviewer.watermark_for({**view, "grant_id": None}, {"name": "Ann Author", "email": AUTHOR[0]},
+                                     dict(db.DEFAULT_SETTINGS))
+    assert AUTHOR[0] not in " ".join(preview.lines) + preview.footer
+    assert "Ann Author" not in " ".join(preview.lines) + preview.footer
+    assert preview.lines[0] == "Reviewer Name  ·  reviewer@example.com"
+
+
+def test_watermark_settings_change_what_reviewers_see(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    before = rae.get(f"{view_url}/page/1?w=800").data
+
+    form = {"book_title": "", "author_name": "Ann Author", "default_expiry_days": "30", "default_max_views": "",
+            "default_max_devices": "2", "watermark_opacity": "14", "require_nda": "1", "nda_text": "Keep it secret.",
+            "watermark_text": "DRAFT - NOT FOR CIRCULATION\r\nLicensed to {name}", "watermark_footer": "Copy {ref}"}
+    saved = author.post("/admin/settings", form, follow_redirects=True).get_data(as_text=True)
+    assert "Settings saved." in saved and "DRAFT - NOT FOR CIRCULATION\nLicensed to {name}" in saved
+    after = rae.get(f"{view_url}/page/1?w=800").data
+    assert after[:3] == b"\xff\xd8\xff" and after != before
+
+    too_long = dict(form, watermark_text="one\ntwo\nthree\nfour")
+    assert "up to 3 lines" in author.post("/admin/settings", too_long, follow_redirects=True).get_data(as_text=True)
+    assert query(app, "SELECT value FROM settings WHERE key = 'watermark_text'")[0]["value"].count("\n") == 1
+
+
+def test_customised_notice_from_an_older_version_is_kept(app, author):
+    with app.app_context():
+        db.set_setting("watermark_notice", "Advance copy for the editorial board")
+    with app.app_context():
+        footer = db.settings()["watermark_footer"]
+    assert footer == "Advance copy for the editorial board  ·  Issued to {email}  ·  {date}  ·  Ref {ref}"

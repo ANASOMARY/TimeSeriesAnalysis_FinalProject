@@ -24,11 +24,22 @@
   </section>
   <section class="card">
     <h2>Watermark</h2>
-    <p class="muted">Every page is stamped with the reviewer's name, email address, the time and their IP address. This line is added at the foot of each page.</p>
+    <p class="muted">You write the text that is stamped on every page. Words in braces are filled in for each reader:
+      <code>{name}</code> and <code>{email}</code> (the reviewer's), <code>{date}</code> (when they opened the chapter),
+      <code>{ip}</code> (their network address), <code>{ref}</code> (a code that matches the Activity log),
+      <code>{book}</code> and <code>{author}</code> (from above).</p>
     <div class="fields">
-      <label class="wide">Notice line <input type="text" name="watermark_notice" value="{{ site.watermark_notice }}" maxlength="120"></label>
+      <label class="wide">Text repeated across the page <span class="muted">(up to 3 lines)</span>
+        <textarea name="watermark_text" rows="3" maxlength="400">{{ site.watermark_text }}</textarea>
+        <small>Keeping <code>{name}</code> or <code>{email}</code> here is what makes a leaked screenshot traceable to one reviewer. Leave blank for no repeated text.</small>
+      </label>
+      <label class="wide">Line at the foot of each page
+        <input type="text" name="watermark_footer" value="{{ site.watermark_footer }}" maxlength="300">
+        <small>Leave blank for no footer line.</small>
+      </label>
       <label>Strength, 4 to 40 <input type="number" name="watermark_opacity" value="{{ site.watermark_opacity }}" min="4" max="40" required><small>Higher is more visible. 14 is readable without getting in the way.</small></label>
     </div>
+    <p class="fine">Use “Preview as a reviewer sees it” on any chapter to check the result. The preview fills in a stand-in reviewer, not your own details.</p>
   </section>
   <section class="card">
     <h2>Confidentiality terms</h2>

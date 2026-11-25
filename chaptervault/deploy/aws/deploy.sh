@@ -13,6 +13,7 @@
 set -euo pipefail
 
 BASE=/opt/chaptervault
+export HOME="${HOME:-/root}"   # unset when run through Systems Manager; git wants one
 
 # Everything lives in main() so the whole script is parsed before the code checkout below
 # replaces this very file.

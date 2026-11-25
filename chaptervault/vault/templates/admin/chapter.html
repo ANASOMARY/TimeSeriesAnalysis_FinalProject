@@ -45,12 +45,27 @@
     {% if feedback %}<a class="btn small" href="{{ url_for('admin.chapter_feedback_csv', doc_id=doc.id) }}">Download as spreadsheet</a>{% endif %}</div>
   {% if feedback %}
   <div class="table-wrap"><table>
-    <thead><tr><th>Page</th><th>Reviewer</th><th>Note</th><th>Written</th></tr></thead>
+    <thead><tr><th>Page</th><th>Reviewer</th><th>Passage and note</th><th>Written</th><th></th></tr></thead>
     <tbody>{% for c in feedback %}
-      <tr><td class="num">{{ c.page }}</td><td class="nowrap">{{ c.name }}</td><td class="quote">{{ c.body }}</td><td class="nowrap">{{ c.created_at|dt }}</td></tr>
+      <tr>
+        <td class="num">{{ c.page }}</td>
+        <td class="nowrap">{{ c.name }}</td>
+        <td>
+          {% if c.quote %}<span class="passage">“{{ c.quote|truncate(360, true, '…') }}”</span>
+          {% elif c.x0 is not none %}<span class="passage">A marked area of the page (no text under it)</span>{% endif %}
+          <span class="quote">{{ c.body }}</span>
+        </td>
+        <td class="nowrap">{{ c.created_at|dt }}</td>
+        <td class="r">
+          <form method="post" action="{{ url_for('admin.chapter_preview', doc_id=doc.id) }}" class="inline">
+            {{ csrf() }}<input type="hidden" name="page" value="{{ c.page }}"><input type="hidden" name="note" value="{{ c.id }}">
+            <button class="btn small">Show on page</button>
+          </form>
+        </td>
+      </tr>
     {% endfor %}</tbody>
   </table></div>
-  {% else %}<div class="empty">No feedback yet. Reviewers can attach notes to any page while reading.</div>{% endif %}
+  {% else %}<div class="empty">No feedback yet. Reviewers can pin notes to a paragraph, a passage or a whole page while reading.</div>{% endif %}
 </section>
 
 <div class="grid2">
