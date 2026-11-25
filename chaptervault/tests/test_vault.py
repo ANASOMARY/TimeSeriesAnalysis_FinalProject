@@ -132,6 +132,18 @@ def test_setup_requires_the_one_time_token(app):
     assert browser.get(f"/setup?token={app.config['SETUP_TOKEN']}").status_code == 200
 
 
+def test_setup_token_can_be_fixed_by_the_deployment(tmp_path, monkeypatch):
+    token = "t" * 40
+    monkeypatch.setenv("CHAPTERVAULT_SETUP_TOKEN", token)
+    first = create_app(tmp_path / "data")
+    again = create_app(tmp_path / "data")          # a restart keeps the same link valid
+    assert first.config["SETUP_TOKEN"] == again.config["SETUP_TOKEN"] == token
+    assert Browser(again).get(f"/setup?token={token}").status_code == 200
+    monkeypatch.setenv("CHAPTERVAULT_SETUP_TOKEN", "too-short")
+    with pytest.raises(RuntimeError):
+        create_app(tmp_path / "other")
+
+
 def test_setup_is_closed_once_an_author_exists(app, author):
     assert Browser(app).get(f"/setup?token={app.config['SETUP_TOKEN']}").status_code == 302
 

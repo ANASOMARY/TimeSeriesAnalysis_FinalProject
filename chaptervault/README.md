@@ -67,7 +67,59 @@ If a reviewer changes computer or forgets their password, open their page and us
 Reviewers need to reach the server over **HTTPS**. Do not expose it over plain HTTP: passwords and
 pages would travel unencrypted.
 
-On any server with Docker and a domain name pointing at it:
+### On AWS (one command)
+
+`deploy/aws/chaptervault.yaml` is a CloudFormation template that creates everything: one small
+server with a fixed IP address, a firewall open only on the web ports, an encrypted disk, an
+automatic HTTPS certificate and daily backups kept for 14 days. Expect roughly $20 a month.
+
+1. Sign in to the AWS console and pick a region (top right) near you and your reviewers.
+2. Open **CloudShell** (the terminal icon in the top bar) and paste:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/ANASOMARY/TimeSeriesAnalysis_FinalProject/ccr-ad86fbe7-utaqxg/chaptervault/deploy/aws/chaptervault.yaml -o chaptervault.yaml \
+   && aws cloudformation deploy --stack-name chaptervault --template-file chaptervault.yaml --capabilities CAPABILITY_IAM \
+   && aws cloudformation describe-stacks --stack-name chaptervault --query "Stacks[0].Outputs[].[OutputKey,OutputValue]" --output text
+   ```
+
+3. Wait about ten minutes. It ends by printing three lines:
+   - `Step1CreateYourAccount`: open the link between the quotes once, to create your author account.
+   - `WebAddress`: the address you and your reviewers use.
+   - `ServerIpAddress`: only needed if you bring your own domain (below).
+
+Without further options you get an automatic address of the form `https://1-2-3-4.sslip.io`.
+It works immediately, but it relies on a free third-party DNS service, so treat it as a way to
+try things out. **Before inviting reviewers, use an address of your own**: add this to the
+`deploy` line.
+
+```bash
+--parameter-overrides DomainName=review.example.com HostedZoneId=Z0123456789ABC
+```
+
+`HostedZoneId` is for domains whose DNS is in Route 53 (find it under Route 53 → Hosted zones); the
+DNS record is then created for you. If your DNS is elsewhere, leave it out and create an `A` record
+for your address pointing to `ServerIpAddress`.
+
+If the command fails, this shows why; after a failed first attempt, delete the stack before retrying.
+
+```bash
+aws cloudformation describe-stack-events --stack-name chaptervault \
+  --query "StackEvents[?ResourceStatus=='CREATE_FAILED'].[LogicalResourceId,ResourceStatusReason]" --output text
+aws cloudformation delete-stack --stack-name chaptervault
+```
+
+Later on:
+
+- **Update to the latest code, or change the address.** In the EC2 console select the server,
+  choose *Connect → Session Manager*, and run
+  `sudo bash /opt/chaptervault/src/chaptervault/deploy/aws/deploy.sh`. To change the address, first
+  edit `DOMAIN=` in `/opt/chaptervault/config`. Chapters and accounts are kept.
+- **Remove everything.** `aws cloudformation delete-stack --stack-name chaptervault` deletes the
+  server and every chapter on it.
+
+### On any other server
+
+With Docker and a domain name pointing at the server:
 
 ```bash
 cd chaptervault
@@ -78,8 +130,8 @@ docker compose logs app      # shows the one-time setup link
 This starts ChapterVault behind [Caddy](https://caddyserver.com), which obtains and renews the HTTPS
 certificate automatically. The image includes LibreOffice for Word conversion.
 
-Any other host works too: run `python run.py --host 0.0.0.0` behind a reverse proxy that terminates
-TLS, and set `CHAPTERVAULT_BEHIND_PROXY=1` and `CHAPTERVAULT_BASE_URL`.
+Or run `python run.py --host 0.0.0.0` behind any reverse proxy that terminates TLS, and set
+`CHAPTERVAULT_BEHIND_PROXY=1` and `CHAPTERVAULT_BASE_URL`.
 
 ## Settings
 
@@ -91,6 +143,7 @@ TLS, and set `CHAPTERVAULT_BEHIND_PROXY=1` and `CHAPTERVAULT_BASE_URL`.
 | `CHAPTERVAULT_MASTER_KEY` | 32-byte key (url-safe base64). Keeps the key out of the data folder | generated in `data/master.key` |
 | `CHAPTERVAULT_ADMIN_EMAIL`, `CHAPTERVAULT_ADMIN_PASSWORD`, `CHAPTERVAULT_ADMIN_NAME` | Create the author account at first start instead of using the setup link | unset |
 | `CHAPTERVAULT_MAX_UPLOAD_MB` | Largest accepted upload | `200` |
+| `CHAPTERVAULT_SETUP_TOKEN` | Fixes the one-time setup token (32+ characters) so the setup link survives restarts | random per start |
 | `PORT`, `CHAPTERVAULT_HOST` | Listening port and address | `8000`, `127.0.0.1` |
 
 Defaults for new grants, the watermark text and strength, and the confidentiality terms are edited

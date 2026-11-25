@@ -6,9 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CHAPTERVAULT_HOST=0.0.0.0
 
 # LibreOffice converts Word files to PDF with their original layout; the fonts keep that layout close.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libreoffice-writer-nogui fonts-dejavu-core fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
+# Build with --build-arg WITH_LIBREOFFICE=0 for a smaller image that re-flows Word files instead.
+ARG WITH_LIBREOFFICE=1
+RUN if [ "$WITH_LIBREOFFICE" = "1" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends libreoffice-writer-nogui fonts-dejavu-core fonts-liberation \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 WORKDIR /app
 COPY requirements.txt .

@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  ChapterVault - a private reading room for manuscript review. One small server with a fixed
+  address, automatic HTTPS, an encrypted disk and daily backups.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Web address}
+        Parameters: [DomainName, HostedZoneId]
+      - Label: {default: Server}
+        Parameters: [InstanceType, DiskSizeGb]
+      - Label: {default: Advanced (leave as they are)}
+        Parameters: [GitRepo, GitRef, LatestAmi]
+    ParameterLabels:
+      DomainName: {default: Your address for reviewers (optional)}
+      HostedZoneId: {default: Route 53 hosted zone ID (optional)}
+      InstanceType: {default: Server size}
+      DiskSizeGb: {default: Disk size in GB}
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+    ConstraintDescription: A lower-case host name such as review.example.com, or blank.
+    Description: >-
+      For example review.example.com. Leave blank to get an automatic address you can use
+      straight away and replace later.
+  HostedZoneId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^Z[A-Z0-9]+$'
+    ConstraintDescription: A Route 53 hosted zone ID (starts with Z), or blank.
+    Description: >-
+      Only if the domain's DNS is managed in Route 53. The DNS record is then created for you.
+      Leave blank if your DNS is elsewhere and add the record yourself (see Outputs).
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.small, t3.medium, t3a.small, t3a.medium]
+    Description: t3.small (2 GB memory) is enough for an author and a few dozen reviewers.
+  DiskSizeGb:
+    Type: Number
+    Default: 30
+    MinValue: 20
+    MaxValue: 500
+  GitRepo:
+    Type: String
+    Default: https://github.com/ANASOMARY/TimeSeriesAnalysis_FinalProject.git
+    AllowedPattern: '^https://github\.com/[A-Za-z0-9._/-]+$'
+  GitRef:
+    Type: String
+    Default: ccr-ad86fbe7-utaqxg
+    AllowedPattern: '^[A-Za-z0-9._/-]+$'
+    Description: Branch or tag to install.
+  LatestAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref DomainName, '']]
+  CreateDnsRecord: !And
+    - !Condition HasDomain
+    - !Not [!Equals [!Ref HostedZoneId, '']]
+
+Resources:
+  # Only the two web ports are reachable from the internet. There is no SSH port:
+  # administration goes through Systems Manager Session Manager.
+  WebFirewall:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ChapterVault - web traffic only
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP (redirects to HTTPS and certificate renewal)}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS}
+
+  ServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  ServerProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref ServerRole]
+
+  Address:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: !Ref 'AWS::StackName'}
+
+  Server:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmi
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ServerProfile
+      SecurityGroupIds: [!GetAtt WebFirewall.GroupId]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeType: gp3, VolumeSize: !Ref DiskSizeGb, Encrypted: true, DeleteOnTermination: true}
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1   # containers cannot reach the server's own AWS credentials
+      PropagateTagsToVolumeOnCreation: true
+      Tags:
+        - {Key: Name, Value: !Ref 'AWS::StackName'}
+        - {Key: Backup, Value: !Ref 'AWS::StackName'}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          exec > >(tee -a /var/log/chaptervault-setup.log) 2>&1
+          set -uo pipefail
+          HANDLE='${Ready}'
+          signal() {
+            curl -sS -X PUT -H 'Content-Type:' --data-binary \
+              "{\"Status\":\"$1\",\"Reason\":\"$2\",\"UniqueId\":\"SetupLink\",\"Data\":\"$3\"}" "$HANDLE" || true
+          }
+          give_up() {
+            signal FAILURE "$1. Last lines: $(tail -n 4 /var/log/chaptervault-setup.log | tr '\n\t\r' '   ' | tr -d '\000-\037"\\' | cut -c1-600)" ""
+            exit 1
+          }
+
+          mkdir -p /opt/chaptervault && chmod 700 /opt/chaptervault
+          cat > /opt/chaptervault/config <<'CONFIG'
+          REPO='${GitRepo}'
+          REF='${GitRef}'
+          DOMAIN='${DomainName}'
+          PUBLIC_IP='${Address}'
+          CONFIG
+
+          # The certificate can only be issued once the fixed address points at this server.
+          for _ in $(seq 1 60); do
+            TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
+            CURRENT=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
+            [ "$CURRENT" = '${Address}' ] && break
+            sleep 5
+          done
+
+          dnf install -y git docker || give_up "Could not install Docker and git"
+          git clone --depth 1 --branch '${GitRef}' '${GitRepo}' /opt/chaptervault/src \
+            || give_up "Could not download the code"
+          bash /opt/chaptervault/src/chaptervault/deploy/aws/deploy.sh || give_up "Installation failed"
+          . /opt/chaptervault/result
+          signal SUCCESS "$NOTE" "$SETUP_URL"
+
+  AddressAttachment:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt Address.AllocationId
+      InstanceId: !Ref Server
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDnsRecord
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      TTL: '300'
+      ResourceRecords: [!Ref Address]
+
+  # The stack only reports success once the server says the app is answering,
+  # and the server sends back the one-time link for creating the author account.
+  Ready:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  Installed:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: [Server, AddressAttachment]
+    Properties:
+      Handle: !Ref Ready
+      Timeout: '2400'
+      Count: 1
+
+  BackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: dlm.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole
+
+  DailyBackup:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: Daily snapshot of the ChapterVault server - kept for 14 days
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt BackupRole.Arn
+      PolicyDetails:
+        ResourceTypes: [INSTANCE]
+        TargetTags:
+          - {Key: Backup, Value: !Ref 'AWS::StackName'}
+        Schedules:
+          - Name: daily
+            CopyTags: true
+            CreateRule: {Interval: 24, IntervalUnit: HOURS, Times: ['03:00']}
+            RetainRule: {Count: 14}
+
+Outputs:
+  Step1CreateYourAccount:
+    Description: Open the link between the quotes once, to create your author account.
+    Value: !GetAtt Installed.Data
+  WebAddress:
+    Description: The address you and your reviewers use.
+    Value: !If
+      - HasDomain
+      - !Sub https://${DomainName}
+      - !Sub
+        - https://${Dashed}.sslip.io
+        - Dashed: !Join ['-', !Split ['.', !Ref Address]]
+  ServerIpAddress:
+    Description: >-
+      If you chose your own address and its DNS is not in Route 53, create an A record for it
+      pointing here.
+    Value: !Ref Address

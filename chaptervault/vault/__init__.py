@@ -104,7 +104,12 @@ def _bootstrap(app: Flask) -> None:
                 "VALUES ('admin',?,?,?,'active',?)", name, email, auth.hash_password(password), db.now_iso())
             db.set_setting("author_name", name)
             return
-        token = security.new_token(24)
+        # A deployment script may fix the token so the setup link survives restarts; otherwise
+        # a fresh one is issued on every start until the author account exists.
+        token = os.environ.get("CHAPTERVAULT_SETUP_TOKEN", "").strip()
+        if token and len(token) < 32:
+            raise RuntimeError("CHAPTERVAULT_SETUP_TOKEN must be at least 32 characters")
+        token = token or security.new_token(24)
         db.set_setting("setup_token_hash", security.hash_token(token))
         app.config["SETUP_TOKEN"] = token
 
