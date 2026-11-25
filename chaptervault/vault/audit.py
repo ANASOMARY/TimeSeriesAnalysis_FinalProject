@@ -13,6 +13,9 @@ LABELS = {
     "login_blocked_device": "Sign-in blocked: device limit reached",
     "logout": "Signed out",
     "invite_created": "Invite link created",
+    "invite_emailed": "Invitation emailed",
+    "email_failed": "Email could not be sent",
+    "email_test": "Test email sent",
     "invite_accepted": "Invite accepted, password set",
     "password_changed": "Password changed",
     "nda_accepted": "Confidentiality terms accepted",
@@ -49,7 +52,7 @@ LABELS = {
 # Events that deserve the author's attention in the activity feed.
 ALERTS = {
     "login_failed", "login_locked", "login_blocked_device", "view_denied",
-    "throttled", "print_attempt", "capture_key", "copy_attempt",
+    "throttled", "print_attempt", "capture_key", "copy_attempt", "email_failed",
 }
 
 

@@ -11,7 +11,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from . import audit, auth, db, security
 from .config import Config
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; "
@@ -30,6 +30,7 @@ def create_app(data_dir: str | os.PathLike | None = None) -> Flask:
     app.config["BLOB_KEY"] = security.derive(master, "blobs")
     app.config["INVITE_KEY"] = security.derive(master, "invites")
     app.config["CSRF_KEY"] = security.derive(master, "csrf")
+    app.config["MAIL_KEY"] = security.derive(master, "mail")
     if cfg.behind_proxy:
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 

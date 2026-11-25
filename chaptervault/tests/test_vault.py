@@ -680,3 +680,340 @@ def test_reviewer_can_edit_their_own_note(app, author):
     author.post("/admin/grants/1/update", {"action": "revoke"})
     assert rae.json(f"{rae_view}/comments/{note['id']}/edit", {"body": "too late"}).status_code == 403
     assert query(app, "SELECT body FROM comments")[0]["body"] == "First draft of my thought, fixed."
+
+
+# ------------------------------------------------------------ invitation email
+
+import smtplib  # noqa: E402
+
+from vault import mailer  # noqa: E402
+
+SETTINGS_FORM = {"book_title": "The Lighthouse", "author_name": "Ann Author", "default_expiry_days": "30",
+                 "default_max_views": "", "default_max_devices": "2", "watermark_opacity": "14",
+                 "watermark_text": "{name}", "watermark_footer": "", "require_nda": "1", "nda_text": "Keep it secret."}
+MAIL_FORM = {"smtp_host": "smtp.example.com", "smtp_port": "587", "smtp_security": "starttls",
+             "smtp_username": "ann.login", "smtp_password": "app-password-123",
+             "mail_from_address": "ann@example.com", "mail_from_name": "Ann Author"}
+
+
+class FakeMailServer:
+    """Stands in for smtplib.SMTP / SMTP_SSL and records what the app does with it."""
+    outbox: list = []
+    log: list = []
+    fail_with: Exception | None = None
+
+    def __init__(self, host, port, timeout=None, context=None):
+        FakeMailServer.log.append(("connect", type(self).__name__, host, port))
+        if isinstance(FakeMailServer.fail_with, OSError) and not isinstance(FakeMailServer.fail_with, smtplib.SMTPException):
+            raise FakeMailServer.fail_with
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def starttls(self, context=None):
+        FakeMailServer.log.append(("starttls", context is not None))
+
+    def login(self, username, password):
+        FakeMailServer.log.append(("login", username, password))
+        if isinstance(FakeMailServer.fail_with, smtplib.SMTPAuthenticationError):
+            raise FakeMailServer.fail_with
+
+    def send_message(self, message):
+        if FakeMailServer.fail_with is not None:
+            raise FakeMailServer.fail_with
+        FakeMailServer.outbox.append(message)
+
+
+class FakeMailServerSSL(FakeMailServer):
+    pass
+
+
+@pytest.fixture()
+def mail(monkeypatch):
+    FakeMailServer.outbox, FakeMailServer.log, FakeMailServer.fail_with = [], [], None
+    monkeypatch.setattr(mailer.smtplib, "SMTP", FakeMailServer)
+    monkeypatch.setattr(mailer.smtplib, "SMTP_SSL", FakeMailServerSSL)
+    return FakeMailServer
+
+
+def set_up_email(author, **overrides):
+    page = author.post("/admin/settings", {**SETTINGS_FORM, **MAIL_FORM, **overrides}, follow_redirects=True)
+    return page.get_data(as_text=True)
+
+
+def link_in(message) -> str:
+    return re.search(r"https?://\S+/invite/\S+", message.get_content()).group(0)
+
+
+def test_invitation_is_emailed_when_a_reviewer_is_added(app, author, mail):
+    assert "Settings saved." in set_up_email(author)
+    stored = {r["key"]: r["value"] for r in query(app, "SELECT key, value FROM settings")}
+    assert "app-password-123" not in "".join(stored.values())                 # encrypted at rest
+    assert "app-password-123" not in author.get("/admin/settings").get_data(as_text=True)   # never sent back
+
+    upload(author)
+    added = author.post("/admin/reviewers/add", {"name": "Rae Reader", "email": "rae@example.com",
+                                                 "documents": ["1"], "send_email": "1"}, follow_redirects=True)
+    page = added.get_data(as_text=True)
+    assert "Their invitation was emailed to rae@example.com." in page and "Resend by email" in page
+
+    (message,) = mail.outbox
+    assert message["To"] == "Rae Reader <rae@example.com>" and message["From"] == "Ann Author <ann@example.com>"
+    assert message["Subject"] == "Chapters for your review"
+    body = message.get_content()
+    assert body.startswith("Hello Rae Reader,") and "chapters of The Lighthouse" in body and body.rstrip().endswith("Ann Author")
+    assert ("connect", "FakeMailServer", "smtp.example.com", 587) in mail.log and ("starttls", True) in mail.log
+    assert ("login", "ann.login", "app-password-123") in mail.log
+    assert mail.log.index(("starttls", True)) < mail.log.index(("login", "ann.login", "app-password-123"))
+
+    # the emailed link is the reviewer's real invitation
+    path = "/invite/" + link_in(message).rsplit("/invite/", 1)[1]
+    visitor = Browser(app)
+    assert visitor.get(path).status_code == 200
+    assert visitor.post(path, {"password": "reviewer password 1", "confirm": "reviewer password 1"}, form_page=path).status_code == 302
+    kinds = [e["kind"] for e in query(app, "SELECT kind FROM events")]
+    assert "invite_emailed" in kinds and "email_failed" not in kinds
+
+
+def test_invitation_can_be_resent_and_replaced_when_it_has_lapsed(app, author, mail):
+    set_up_email(author)
+    author.post("/admin/reviewers/add", {"name": "Rae Reader", "email": "rae@example.com", "send_email": "1"})
+    again = author.post("/admin/reviewers/2/send-invite", follow_redirects=True).get_data(as_text=True)
+    assert "The invitation was emailed to rae@example.com." in again
+    first, second = (link_in(m) for m in mail.outbox)
+    assert first == second                                   # resending does not break the link already sent
+
+    with app.app_context():                                  # let the invitation lapse
+        db.run("UPDATE users SET invite_expires_at = '2020-01-01T00:00:00Z' WHERE id = 2")
+    assert "Email a new invitation" in author.get("/admin/reviewers/2").get_data(as_text=True)
+    author.post("/admin/reviewers/2/send-invite")
+    third = link_in(mail.outbox[2])
+    assert third != first
+    assert Browser(app).get("/invite/" + first.rsplit("/invite/", 1)[1]).status_code == 410
+    assert Browser(app).get("/invite/" + third.rsplit("/invite/", 1)[1]).status_code == 200
+
+
+def test_reviewer_who_already_joined_gets_a_password_reset_email(app, author, mail):
+    set_up_email(author)
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    mail.outbox.clear()
+    assert "Email a password reset link" in author.get("/admin/reviewers/2").get_data(as_text=True)
+    sent = author.post("/admin/reviewers/2/send-invite", follow_redirects=True).get_data(as_text=True)
+    assert "The password reset link was emailed to rae@example.com." in sent
+    assert rae.get("/library").status_code == 200            # still signed in; the old password works until the link is used
+    path = "/invite/" + link_in(mail.outbox[0]).rsplit("/invite/", 1)[1]
+    visitor = Browser(app)
+    assert visitor.post(path, {"password": "a brand new password", "confirm": "a brand new password"}, form_page=path).status_code == 302
+    assert Browser(app).login("rae@example.com", "reviewer password 1").status_code == 401
+
+    author.post("/admin/reviewers/2/status", {"action": "suspend"})
+    refused = author.post("/admin/reviewers/2/send-invite", follow_redirects=True).get_data(as_text=True)
+    assert "is suspended" in refused and len(mail.outbox) == 1
+
+
+def test_a_failed_email_does_not_lose_the_reviewer(app, author, mail):
+    set_up_email(author)
+    mail.fail_with = smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
+    page = author.post("/admin/reviewers/add", {"name": "Rae Reader", "email": "rae@example.com", "send_email": "1"},
+                       follow_redirects=True).get_data(as_text=True)
+    assert "the invitation could not be emailed" in page and "rejected the username or password" in page
+    assert 'id="invite-link"' in page and "Send by email" in page          # the author can still copy the link
+    person = query(app, "SELECT * FROM users WHERE role = 'reviewer'")[0]
+    assert person["status"] == "invited" and person["invite_sent_at"] is None
+    assert "Email could not be sent" in author.get("/admin/activity?show=alerts").get_data(as_text=True)
+
+    for error, expected in (
+            (smtplib.SMTPDataError(554, b"Message rejected: Email address is not verified."), "Email address is not verified"),
+            (smtplib.SMTPRecipientsRefused({"rae@example.com": (550, b"No such user")}), "No such user"),
+            (ConnectionRefusedError(111, "refused"), "Could not connect to the mail server at smtp.example.com on port 587"),
+            (TimeoutError("timed out"), "did not answer in time")):
+        mail.fail_with = error
+        assert expected in author.post("/admin/reviewers/2/send-invite", follow_redirects=True).get_data(as_text=True)
+    assert mail.outbox == []
+
+
+def test_without_a_mail_account_links_are_still_sent_by_hand(app, author, mail):
+    page = author.post("/admin/reviewers/add", {"name": "Rae Reader", "email": "rae@example.com", "send_email": "1"},
+                       follow_redirects=True).get_data(as_text=True)
+    assert "Send them the invite link below" in page and "Write email" in page and "Send by email" not in page
+    refused = author.post("/admin/reviewers/2/send-invite", follow_redirects=True).get_data(as_text=True)
+    assert "Email is not set up yet" in refused and mail.outbox == []
+    assert "Save a mail server and a sender address first." in author.post(
+        "/admin/settings/test-email", follow_redirects=True).get_data(as_text=True)
+
+
+def test_author_can_add_a_reviewer_without_emailing_yet(app, author, mail):
+    set_up_email(author)
+    page = author.post("/admin/reviewers/add", {"name": "Rae Reader", "email": "rae@example.com"},
+                       follow_redirects=True).get_data(as_text=True)
+    assert "No email was sent" in page and "Not emailed yet." in page and mail.outbox == []
+    assert "not emailed" in author.get("/admin/reviewers").get_data(as_text=True)
+
+
+def test_author_words_the_invitation(app, author, mail):
+    set_up_email(author, invite_subject="{author} would value your eye on {book}",
+                 invite_message="Dear {name},\r\nplease read by {expires}. {unknown} stays as typed.")
+    author.post("/admin/reviewers/add", {"name": "Rae Reader", "email": "rae@example.com", "send_email": "1"})
+    (message,) = mail.outbox
+    assert message["Subject"] == "Ann Author would value your eye on The Lighthouse"
+    body = message.get_content()
+    assert body.startswith("Dear Rae Reader,\nplease read by ") and "{unknown} stays as typed." in body
+    assert "/invite/" in body.splitlines()[-1]                # the link is added when the wording leaves it out
+
+
+def test_form_input_cannot_add_mail_headers(app, author, mail):
+    set_up_email(author, mail_from_name="Ann\r\nBcc: spy@example.com")
+    author.post("/admin/reviewers/add", {"name": "Rae\r\nBcc: other@example.com", "email": "rae@example.com",
+                                         "send_email": "1"})
+    (message,) = mail.outbox
+    assert message["Bcc"] is None and message["Cc"] is None
+    assert message["To"] == '"Rae Bcc: other@example.com" <rae@example.com>'
+    for bad in ("rae@example.com\r\nBcc: x@example.com", "rae@@example.com", "rae example@x.com", "rae@nodot", "<rae@example.com>"):
+        refused = author.post("/admin/reviewers/add", {"name": "Bad Address", "email": bad}, follow_redirects=True)
+        assert "valid email address" in refused.get_data(as_text=True), bad
+    assert len(query(app, "SELECT id FROM users WHERE role = 'reviewer'")) == 1
+
+
+def test_mail_settings_are_validated_and_the_password_is_kept(app, author, mail):
+    assert "must be a number, usually 587 or 465" in set_up_email(author, smtp_port="0")
+    assert "address invitations should come from" in set_up_email(author, mail_from_address="not-an-address")
+    assert "for example smtp.gmail.com" in set_up_email(author, smtp_host="smtp example com")
+    assert query(app, "SELECT COUNT(*) AS n FROM settings WHERE key = 'smtp_host'")[0]["n"] == 0
+
+    set_up_email(author, smtp_security="ssl", smtp_port="465")
+    set_up_email(author, smtp_security="ssl", smtp_port="465", smtp_password="")      # blank keeps the saved password
+    sent = author.post("/admin/settings/test-email", follow_redirects=True).get_data(as_text=True)
+    assert f"A test email was sent to {AUTHOR[0]}." in sent
+    assert ("connect", "FakeMailServerSSL", "smtp.example.com", 465) in mail.log
+    assert ("login", "ann.login", "app-password-123") in mail.log and not any(e[0] == "starttls" for e in mail.log)
+    assert mail.outbox[0]["To"] == f"Ann Author <{AUTHOR[0]}>"
+
+    set_up_email(author, smtp_host="", mail_from_address="", smtp_password="")        # switching email off
+    stored = {r["key"]: r["value"] for r in query(app, "SELECT key, value FROM settings")}
+    assert stored["smtp_host"] == "" and stored["smtp_password_enc"] == ""
+    assert "Not set up" in author.get("/admin/settings").get_data(as_text=True)
+
+
+def test_existing_users_table_gains_the_invite_sent_column(tmp_path):
+    import sqlite3
+    first = create_app(tmp_path / "data")
+    conn = sqlite3.connect(first.config["VAULT"].db_path)
+    conn.execute("ALTER TABLE users DROP COLUMN invite_sent_at")
+    conn.commit()
+    conn.close()
+    upgraded = create_app(tmp_path / "data")
+    with upgraded.app_context():
+        assert "invite_sent_at" in {r["name"] for r in db.all("PRAGMA table_info(users)")}
+
+
+# A real mail server on this machine: proves the encrypted connection, sign-in and delivery
+# actually work through smtplib, not just against the stand-in above.
+
+def _certificates(folder):
+    from datetime import datetime, timedelta, timezone
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    now = datetime.now(timezone.utc)
+    usage = dict(content_commitment=False, key_encipherment=False, data_encipherment=False, key_agreement=False,
+                 encipher_only=False, decipher_only=False)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test mail CA")])
+    ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
+          .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(days=1))
+          .not_valid_after(now + timedelta(days=2))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+          .add_extension(x509.KeyUsage(digital_signature=True, key_cert_sign=True, crl_sign=True, **usage), critical=True)
+          .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+          .sign(ca_key, hashes.SHA256()))
+    key = ec.generate_private_key(ec.SECP256R1())
+    leaf = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]))
+            .issuer_name(ca_name).public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=2))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(digital_signature=True, key_cert_sign=False, crl_sign=False, **usage), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+            .sign(ca_key, hashes.SHA256()))
+    paths = {name: folder / f"{name}.pem" for name in ("ca", "cert", "key")}
+    paths["ca"].write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    paths["cert"].write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+    paths["key"].write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                               serialization.NoEncryption()))
+    return paths
+
+
+@pytest.mark.filterwarnings("ignore:Requiring AUTH while not requiring TLS")
+@pytest.mark.parametrize("mode", ["starttls", "ssl"])
+def test_real_delivery_over_an_encrypted_connection(tmp_path, monkeypatch, mode):
+    pytest.importorskip("aiosmtpd")
+    import socket
+    import ssl
+    from aiosmtpd.controller import Controller
+    from aiosmtpd.smtp import AuthResult
+
+    certs = _certificates(tmp_path)
+    (tmp_path / "stranger").mkdir()
+    stranger = _certificates(tmp_path / "stranger")           # an authority that did not sign the server's certificate
+    monkeypatch.setattr(mailer, "TIMEOUT", 4)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(certs["cert"], certs["key"])
+    received = []
+
+    class Inbox:
+        async def handle_DATA(self, server, session, envelope):
+            received.append((session.ssl is not None, envelope.mail_from, envelope.rcpt_tos, envelope.content.decode()))
+            return "250 Message accepted"
+
+    def authenticator(server, session, envelope, mechanism, data):
+        return AuthResult(success=(data.login, data.password) == (b"ann.login", b"app-password-123"))
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    # On the always-encrypted port this test server only offers sign-in when told the link is already secure.
+    options = (dict(ssl_context=tls, auth_require_tls=False) if mode == "ssl"
+               else dict(tls_context=tls, require_starttls=True))
+    controller = Controller(Inbox(), hostname="127.0.0.1", port=port, authenticator=authenticator,
+                            auth_required=True, **options)
+    controller.start()
+    try:
+        config = {"host": "localhost", "port": port, "security": mode, "username": "ann.login",
+                  "password": "app-password-123", "from_name": "Ann Author", "from_address": "ann@example.com"}
+        send = lambda **changes: mailer.send({**config, **changes}, "Rae Reader", "rae@example.com",  # noqa: E731
+                                             "Chapters for your review", "Hello Rae,\nhttps://vault.example/invite/abc")
+
+        # 1. A certificate nobody vouches for is refused: no message leaves over a connection we cannot trust.
+        monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(stranger["ca"]))
+        with pytest.raises(mailer.MailError, match="secure connection"):
+            send()
+        assert received == []
+
+        # (A wrong password is covered with the stand-in server above: this test server sends no
+        # reply within the time limit after a failed sign-in, which would only test its own stall.)
+        monkeypatch.setenv("SSL_CERT_FILE", str(certs["ca"]))
+
+        # 2. The real thing: encrypted connection, sign-in, delivery.
+        send()
+        ((encrypted, sender, recipients, content),) = received
+        # The server only records the upgrade on the STARTTLS port; on the always-encrypted port the
+        # refusal in step 1 is the proof that the link is TLS with certificate checking in force.
+        assert encrypted or mode == "ssl"
+        assert sender == "ann@example.com" and recipients == ["rae@example.com"]
+        assert "Subject: Chapters for your review" in content and "https://vault.example/invite/abc" in content
+        assert "From: Ann Author <ann@example.com>" in content and "To: Rae Reader <rae@example.com>" in content
+
+        # 3. Asking for the wrong kind of connection is explained rather than hanging or crashing.
+        with pytest.raises(mailer.MailError):
+            send(security="ssl" if mode == "starttls" else "starttls")
+    finally:
+        controller.stop()

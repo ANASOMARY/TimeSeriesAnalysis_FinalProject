@@ -41,6 +41,29 @@
     </div>
     <p class="fine">Use “Preview as a reviewer sees it” on any chapter to check the result. The preview fills in a stand-in reviewer, not your own details.</p>
   </section>
+  <section class="card" id="email">
+    <h2>Email</h2>
+    <p class="muted">Enter a mail account and reviewers are emailed their invitation as soon as you add them.
+      {% if mail_ready %}<span class="badge ok">Set up</span>{% else %}<span class="badge plain">Not set up: you copy and send links yourself</span>{% endif %}</p>
+    <div class="fields">
+      <label>Mail server <input type="text" name="smtp_host" value="{{ site.smtp_host }}" maxlength="200" placeholder="smtp.gmail.com" autocomplete="off" spellcheck="false"></label>
+      <label>Port <input type="number" name="smtp_port" value="{{ site.smtp_port }}" min="1" max="65535"></label>
+      <label>Connection
+        <select name="smtp_security">{% for value, label in security_modes.items() %}<option value="{{ value }}"{% if site.smtp_security == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      </label>
+      <label>Username <input type="text" name="smtp_username" value="{{ site.smtp_username }}" maxlength="200" autocomplete="off" spellcheck="false"></label>
+      <label>Password <input type="password" name="smtp_password" maxlength="300" autocomplete="new-password" placeholder="{{ 'Saved. Leave blank to keep it' if site.smtp_password_enc else '' }}">
+        <small>Stored encrypted and never shown again. Many providers need an “app password” here, not your normal one.</small></label>
+      <label>Send from this address <input type="email" name="mail_from_address" value="{{ site.mail_from_address }}" maxlength="200" autocomplete="off"></label>
+      <label>Sender name <input type="text" name="mail_from_name" value="{{ site.mail_from_name }}" maxlength="120" placeholder="{{ site.author_name }}"></label>
+      <label class="wide">Invitation subject <input type="text" name="invite_subject" value="{{ site.invite_subject }}" maxlength="200" placeholder="{{ default_subject }}"></label>
+      <label class="wide">Invitation message
+        <textarea name="invite_message" rows="9" maxlength="4000" placeholder="{{ default_message }}">{{ site.invite_message }}</textarea>
+        <small>Leave blank to use the wording shown. Filled in for each reviewer: <code>{name}</code>, <code>{link}</code>, <code>{book}</code>, <code>{author}</code>, <code>{expires}</code>.</small>
+      </label>
+    </div>
+    <p class="fine">Clear the mail server box to switch email off. Save first, then use “Send a test email” at the foot of this page.</p>
+  </section>
   <section class="card">
     <h2>Confidentiality terms</h2>
     <label class="check"><input type="checkbox" name="require_nda" value="1"{% if site.require_nda == '1' %} checked{% endif %}><span>Reviewers must accept these terms before they can open anything</span></label>
@@ -49,5 +72,10 @@
     </div>
   </section>
   <button class="btn primary big">Save settings</button>
+</form>
+<form method="post" action="{{ url_for('admin.settings_test_email') }}" class="after-form">
+  {{ csrf() }}
+  <button class="btn"{% if not mail_ready %} disabled{% endif %}>Send a test email to {{ me.email }}</button>
+  <span class="muted">Uses the saved email settings.</span>
 </form>
 {% endblock %}

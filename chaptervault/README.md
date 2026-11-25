@@ -22,6 +22,7 @@ again whenever you like. Reviewers read in their browser; the file itself never 
 | **Printing and copying blocked** | Printing produces a blank page; text selection, right-click, save and copy are disabled; the page is hidden when the window loses focus. |
 | **Audit trail** | Sign-ins, every chapter opened, every page viewed, reading time, and each blocked print or copy attempt. Exportable as a spreadsheet. |
 | **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page), and can edit or delete their own notes. You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
+| **Invitations by email** | Enter a mail account once and each reviewer is emailed their personal invitation as soon as you add them. Resend it, or email a password-reset link, from the reviewer's page. Without a mail account you copy the link and send it yourself. |
 | **Confidentiality terms** | Reviewers must accept your terms before they can open anything (editable, optional). |
 
 ## Run it on your computer
@@ -52,15 +53,35 @@ exporting to PDF from Word first gives you exact control over what reviewers see
 
 1. **Chapters → Upload chapters.** Pick the files. Each is converted, encrypted and listed.
    *Preview as a reviewer sees it* shows the watermarked result.
-2. **Reviewers → Add a reviewer.** Enter a name and email, tick the chapters to share, and you get
-   a personal invite link. Send it yourself (*Copy link* or *Write email*). The reviewer uses it once
-   to choose a password.
+2. **Reviewers → Add a reviewer.** Enter a name and email and tick the chapters to share. If email
+   is set up (below), their invitation is sent straight away; otherwise you get a personal link to
+   send yourself (*Copy link* or *Write email*). The reviewer uses it once to choose a password.
 3. **Access.** A grid of reviewers against chapters: tick to grant, untick to revoke. Open a chapter
    or a reviewer to fine-tune the dates and open limits of a single grant.
 4. **Activity.** See who read what, how far they got, and anything that looked like a copy attempt.
 
 If a reviewer changes computer or forgets their password, open their page and use
-*Reset devices* or *Create password reset link*.
+*Reset devices*, *Email a password reset link* or *Create password reset link*.
+
+### Sending invitations by email
+
+Under **Settings → Email**, enter a mail account. Any standard SMTP service works, the connection is
+always encrypted, and the password is stored encrypted and never shown again. Save, then use
+*Send a test email* at the foot of the page.
+
+| | Mail server | Port | Connection | Username and password |
+|---|---|---|---|---|
+| Gmail or Google Workspace | `smtp.gmail.com` | 587 | STARTTLS | Your address, and an *app password* (needs 2-Step Verification turned on) |
+| Amazon SES | `email-smtp.<region>.amazonaws.com` | 587 | STARTTLS | *SMTP credentials* created in the SES console |
+| Another provider | Look up its "SMTP settings" | 587 or 465 | STARTTLS or SSL/TLS | Usually your mailbox sign-in or an app password |
+
+Notes on Amazon SES: verify the sender address or domain first, and be aware that a new SES account
+is in a *sandbox* that only delivers to addresses you have verified until AWS approves a request
+for production access.
+
+The subject and wording of the invitation are yours to edit in the same section. `{name}`, `{link}`,
+`{book}`, `{author}` and `{expires}` are filled in for each reviewer. Resending an invitation reuses
+the link already sent while it is still valid, and issues a fresh one once it has expired.
 
 ## Putting it online for reviewers
 
@@ -187,13 +208,16 @@ Other limits worth knowing:
 ## Tests
 
 ```bash
-pip install pytest
+pip install pytest aiosmtpd
 python -m pytest tests
 ```
 
+`aiosmtpd` is a small local mail server used by one test to prove real encrypted delivery; that
+test is skipped if it is not installed.
+
 The suite drives the real HTTP routes: encryption at rest, grant isolation between reviewers,
 expiry, open limits, revocation of an open reader, device locking, single-session enforcement,
-lockout, CSRF, and the author-only console.
+lockout, CSRF, the author-only console, pinned notes and invitation email.
 
 ## Licence note
 

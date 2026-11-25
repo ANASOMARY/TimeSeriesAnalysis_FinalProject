@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
   invite_token_hash TEXT,
   invite_token_enc BLOB,
   invite_expires_at TEXT,
+  invite_sent_at TEXT,
   max_devices INTEGER NOT NULL DEFAULT 2,
   failed_logins INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT,
@@ -186,6 +187,7 @@ def run(sql: str, *args) -> sqlite3.Cursor:
 
 # Columns added after the first release. Existing databases gain them on start-up.
 ADDED_COLUMNS = {
+    "users": {"invite_sent_at": "TEXT"},
     "comments": {"x0": "REAL", "y0": "REAL", "x1": "REAL", "y1": "REAL", "quote": "TEXT NOT NULL DEFAULT ''",
                  "edited_at": "TEXT"},
 }
@@ -235,6 +237,16 @@ DEFAULT_SETTINGS = {
     "watermark_text": "{name}  ·  {email}\n{date}  ·  {ip}",
     "watermark_footer": "Confidential review copy - do not copy or distribute  ·  Issued to {email}  ·  {date}  ·  Ref {ref}",
     "watermark_opacity": "14",
+    # Outgoing email. The password is stored encrypted; blank host means email is switched off.
+    "smtp_host": "",
+    "smtp_port": "587",
+    "smtp_security": "starttls",
+    "smtp_username": "",
+    "smtp_password_enc": "",
+    "mail_from_name": "",
+    "mail_from_address": "",
+    "invite_subject": "",
+    "invite_message": "",
 }
 
 _OLD_NOTICE = "Confidential review copy - do not copy or distribute"

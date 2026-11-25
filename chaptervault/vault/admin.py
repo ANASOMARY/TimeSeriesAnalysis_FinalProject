@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -10,7 +11,7 @@ from urllib.parse import quote
 from flask import (Blueprint, Response, abort, current_app, g, redirect, render_template, request,
                    url_for)
 
-from . import access, audit, db, documents, security
+from . import access, audit, db, documents, mailer, security
 from .auth import create_invite, end_sessions, flash, invite_link
 from .reviewer import MAX_WATERMARK_LINES, start_view
 
@@ -126,6 +127,35 @@ def _grant_rows(where: str, *args, order: str = "id") -> list[dict]:
                                   user["id"], doc["id"]),
         })
     return rows
+
+
+def _mail() -> dict | None:
+    return mailer.configuration(db.settings(), current_app.config["MAIL_KEY"])
+
+
+def _email_invite(person) -> str | None:
+    """Email a reviewer their personal link. Returns None on success, or the reason it failed.
+
+    The link already shown to the author is reused while it is still valid, so a resent
+    invitation does not silently break the one sent before; a lapsed link is replaced.
+    """
+    link = invite_link(person)
+    if link is None:
+        create_invite(person["id"])
+        person = _reviewer_or_404(person["id"])
+        link = invite_link(person)
+        audit.log("invite_created", detail=f"{person['name']} <{person['email']}>")
+    who = f"{person['name']} <{person['email']}>"
+    subject, body = mailer.invitation(db.settings(), person, link,
+                                      f"{db.parse_iso(person['invite_expires_at']):%d %B %Y}", g.user["name"])
+    try:
+        mailer.send(_mail(), person["name"], person["email"], subject, body)
+    except mailer.MailError as exc:
+        audit.log("email_failed", detail=f"{who}: {exc}")
+        return str(exc)
+    db.run("UPDATE users SET invite_sent_at = ? WHERE id = ?", db.now_iso(), person["id"])
+    audit.log("invite_emailed", detail=who)
+    return None
 
 
 def _safe_cell(value) -> str:
@@ -339,14 +369,15 @@ def reviewers():
         "(SELECT MAX(last_viewed_at) FROM grants g WHERE g.user_id = u.id) AS last_read "
         "FROM users u WHERE u.role = 'reviewer' ORDER BY u.name COLLATE NOCASE")
     docs = db.all("SELECT id, title FROM documents ORDER BY title COLLATE NOCASE")
-    return render_template("admin/reviewers.html", people=people, docs=docs, defaults=_default_rules())
+    return render_template("admin/reviewers.html", people=people, docs=docs, defaults=_default_rules(),
+                           mail_ready=_mail() is not None)
 
 
 @bp.post("/reviewers/add")
 def reviewer_add():
     name = request.form.get("name", "").strip()[:120]
     email = request.form.get("email", "").strip().lower()[:200]
-    if not name or "@" not in email or " " in email:
+    if not name or not mailer.valid_address(email):
         flash("Enter the reviewer's name and a valid email address.", "bad")
         return redirect(url_for("admin.reviewers"))
     if db.scalar("SELECT 1 FROM users WHERE email = ?", email):
@@ -367,8 +398,18 @@ def reviewer_add():
         if doc is not None:
             _give_access(user, doc, rules)
             granted += 1
-    flash(f"{name} was added" + (f" with access to {granted} chapter{'s' if granted != 1 else ''}" if granted else "")
-          + ". Send them the invite link below so they can set a password.")
+    added = f"{name} was added" + (f" with access to {granted} chapter{'s' if granted != 1 else ''}" if granted else "")
+    if _mail() is None:
+        flash(added + ". Send them the invite link below so they can set a password.")
+    elif request.form.get("send_email") != "1":
+        flash(added + ". No email was sent: use the button below when you are ready, or copy the link.")
+    else:
+        problem = _email_invite(user)
+        if problem is None:
+            flash(added + f". Their invitation was emailed to {email}.")
+        else:
+            flash(added + ", but the invitation could not be emailed. You can copy the link below instead.", "warn")
+            flash(problem, "bad")
     return redirect(url_for("admin.reviewer", user_id=user_id))
 
 
@@ -391,6 +432,7 @@ def reviewer(user_id: int):
         mailto = f"mailto:{quote(person['email'])}?subject={quote('Chapters for your review')}&body={quote(body)}"
     return render_template(
         "admin/reviewer.html", person=person, grants=grants, available=available, link=link, mailto=mailto,
+        mail_ready=_mail() is not None,
         devices=db.all("SELECT * FROM devices WHERE user_id = ? ORDER BY last_seen DESC", user_id),
         events=db.all("SELECT * FROM events WHERE user_id = ? AND kind != 'page_view' ORDER BY id DESC LIMIT 15",
                       user_id),
@@ -403,7 +445,7 @@ def reviewer_update(user_id: int):
     name = request.form.get("name", "").strip()[:120]
     email = request.form.get("email", "").strip().lower()[:200]
     devices = request.form.get("max_devices", "").strip()
-    if not name or "@" not in email or " " in email:
+    if not name or not mailer.valid_address(email):
         flash("Enter a name and a valid email address.", "bad")
     elif not devices.isdigit() or not 1 <= int(devices) <= 10:
         flash("The device limit must be between 1 and 10.", "bad")
@@ -424,6 +466,24 @@ def reviewer_invite(user_id: int):
     audit.log("invite_created", detail=f"{person['name']} <{person['email']}>")
     flash("A new link is ready below. Any earlier link for this reviewer no longer works."
           + ("" if person["status"] == "invited" else " Their current password keeps working until they use it."))
+    return redirect(url_for("admin.reviewer", user_id=user_id))
+
+
+@bp.post("/reviewers/<int:user_id>/send-invite")
+def reviewer_send_invite(user_id: int):
+    """Email the invitation (or, for someone who already joined, a password-reset link)."""
+    person = _reviewer_or_404(user_id)
+    if _mail() is None:
+        flash("Email is not set up yet. Add a mail account under Settings, or copy the link and send it yourself.", "bad")
+    elif person["status"] == "suspended":
+        flash(f"{person['name']} is suspended. Re-activate them before sending a link.", "bad")
+    else:
+        problem = _email_invite(person)
+        if problem is None:
+            flash(f"The {'invitation' if person['status'] == 'invited' else 'password reset link'} "
+                  f"was emailed to {person['email']}.")
+        else:
+            flash(problem, "bad")
     return redirect(url_for("admin.reviewer", user_id=user_id))
 
 
@@ -629,6 +689,18 @@ def settings():
         watermark_lines = [line for line in watermark_lines if line]
         if len(watermark_lines) > MAX_WATERMARK_LINES or any(len(line) > 120 for line in watermark_lines):
             problems.append(f"The watermark can have up to {MAX_WATERMARK_LINES} lines of up to 120 characters each.")
+        host = form.get("smtp_host", "").strip().lower()
+        sender = form.get("mail_from_address", "").strip()
+        port = form.get("smtp_port", "").strip() or "587"
+        if host or sender:
+            if not host or not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", host):
+                problems.append("Enter the mail server's name, for example smtp.gmail.com.")
+            if not mailer.valid_address(sender):
+                problems.append("Enter the email address invitations should come from.")
+            if not port.isdigit() or not 1 <= int(port) <= 65535:
+                problems.append("The mail server port must be a number, usually 587 or 465.")
+            if form.get("smtp_security") not in mailer.SECURITY_MODES:
+                problems.append("Choose the connection type for the mail server.")
         if problems:
             for problem in problems:
                 flash(problem, "bad")
@@ -636,10 +708,46 @@ def settings():
             for key in ("book_title", "author_name", "default_expiry_days", "default_max_views",
                         "default_max_devices", "watermark_footer", "watermark_opacity"):
                 db.set_setting(key, form.get(key, "").strip()[:300])
+            db.set_setting("smtp_host", host)
+            db.set_setting("smtp_port", port)
+            db.set_setting("smtp_security", form.get("smtp_security", "starttls"))
+            db.set_setting("smtp_username", form.get("smtp_username", "").strip()[:200])
+            db.set_setting("mail_from_address", sender)
+            db.set_setting("mail_from_name", " ".join(form.get("mail_from_name", "").split())[:120])
+            db.set_setting("invite_subject", " ".join(form.get("invite_subject", "").split())[:200])
+            db.set_setting("invite_message", form.get("invite_message", "").replace("\r", "").strip()[:4000])
+            # A blank password box means "keep the one already saved"; it is never sent back to the browser.
+            if form.get("smtp_password"):
+                db.set_setting("smtp_password_enc",
+                               mailer.seal_password(current_app.config["MAIL_KEY"], form["smtp_password"]))
+            elif not host:
+                db.set_setting("smtp_password_enc", "")
             db.set_setting("watermark_text", "\n".join(watermark_lines))
             db.set_setting("nda_text", form.get("nda_text", "").strip()[:8000])
             db.set_setting("require_nda", "1" if form.get("require_nda") == "1" else "0")
             audit.log("settings_updated")
             flash("Settings saved.")
         return redirect(url_for("admin.settings"))
-    return render_template("admin/settings.html")
+    return render_template("admin/settings.html", mail_ready=_mail() is not None,
+                           security_modes=mailer.SECURITY_MODES, default_subject=mailer.DEFAULT_INVITE_SUBJECT,
+                           default_message=mailer.DEFAULT_INVITE_MESSAGE)
+
+
+@bp.post("/settings/test-email")
+def settings_test_email():
+    """Send a message to the author's own address, to prove the saved mail account works."""
+    config = _mail()
+    if config is None:
+        flash("Save a mail server and a sender address first.", "bad")
+    else:
+        try:
+            mailer.send(config, g.user["name"], g.user["email"], "ChapterVault test email",
+                        "This is a test from your ChapterVault server.\n\n"
+                        "If you can read it, invitations to reviewers will be delivered the same way.")
+        except mailer.MailError as exc:
+            audit.log("email_failed", detail=f"test: {exc}")
+            flash(str(exc), "bad")
+        else:
+            audit.log("email_test", detail=g.user["email"])
+            flash(f"A test email was sent to {g.user['email']}. Check your inbox (and the spam folder).")
+    return redirect(url_for("admin.settings"))

@@ -224,6 +224,7 @@ code { font: 13px var(--mono); background: #efeae0; border-radius: 4px; padding:
 .fine { font-size: 13px; color: var(--muted); margin: 10px 0 0; overflow-wrap: anywhere; }
 .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 16px; }
 .filters label { min-width: 170px; }
+.after-form { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
 
 @media (max-width: 860px) {

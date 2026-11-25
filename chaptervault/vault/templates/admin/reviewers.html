@@ -24,6 +24,11 @@
     </div>
     <p class="fine">Uses your default rules: {% if defaults.expires_at %}access ends {{ defaults.expires_at|day }}{% else %}no end date{% endif %}, {% if defaults.max_views %}{{ defaults.max_views }} opens{% else %}unlimited opens{% endif %}. You can adjust each one afterwards.</p>
     {% endif %}
+    {% if mail_ready %}
+    <label class="check"><input type="checkbox" name="send_email" value="1" checked><span>Email them the invitation now</span></label>
+    {% else %}
+    <p class="fine">Email is not set up, so you will get a link to send yourself. <a href="{{ url_for('admin.settings') }}#email">Set up email</a> to send invitations automatically.</p>
+    {% endif %}
     <button class="btn primary">Add reviewer</button>
   </form>
 </section>
@@ -39,7 +44,7 @@
     {% for p in people %}
     <tr>
       <td><a class="title" href="{{ url_for('admin.reviewer', user_id=p.id) }}">{{ p.name }}</a><span class="sub">{{ p.email }}{% if p.note %} · {{ p.note }}{% endif %}</span></td>
-      <td>{% if p.status == 'active' %}<span class="badge ok">Active</span>{% elif p.status == 'invited' %}<span class="badge info">Invite pending</span>{% else %}<span class="badge warn">Suspended</span>{% endif %}</td>
+      <td>{% if p.status == 'active' %}<span class="badge ok">Active</span>{% elif p.status == 'invited' %}<span class="badge info">Invite pending</span><span class="sub">{{ 'emailed ' ~ (p.invite_sent_at|ago) if p.invite_sent_at else 'not emailed' }}</span>{% else %}<span class="badge warn">Suspended</span>{% endif %}</td>
       <td class="r num">{{ p.chapters }}</td>
       <td class="r num">{{ p.devices }} of {{ p.max_devices }}</td>
       <td>{{ p.last_login_at|ago }}</td>

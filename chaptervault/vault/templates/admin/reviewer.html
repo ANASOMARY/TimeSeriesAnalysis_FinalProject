@@ -19,12 +19,19 @@
 {% if link %}
 <section class="card invite">
   <h2>{{ 'Invite link' if person.status == 'invited' else 'Password reset link' }}</h2>
-  <p class="muted">Send this to {{ person.name }} so they can set a password. It works once and expires on {{ person.invite_expires_at|day }}.</p>
+  <p class="muted">{% if person.invite_sent_at %}Emailed to {{ person.email }} {{ person.invite_sent_at|ago }}.{% elif mail_ready %}Not emailed yet.{% else %}Send this to {{ person.name }} so they can set a password.{% endif %}
+    It works once and expires on {{ person.invite_expires_at|day }}.</p>
   <div class="linkbox">
     <input type="text" id="invite-link" value="{{ link }}" readonly aria-label="Invite link">
     <button type="button" class="btn" data-copy="invite-link">Copy link</button>
+    {% if mail_ready %}
+    <form method="post" action="{{ url_for('admin.reviewer_send_invite', user_id=person.id) }}" class="inline">{{ csrf() }}
+      <button class="btn primary">{{ 'Resend by email' if person.invite_sent_at else 'Send by email' }}</button></form>
+    {% else %}
     <a class="btn" href="{{ mailto }}">Write email</a>
+    {% endif %}
   </div>
+  {% if not mail_ready %}<p class="fine"><a href="{{ url_for('admin.settings') }}#email">Set up email</a> to have invitations sent automatically.</p>{% endif %}
 </section>
 {% endif %}
 
@@ -73,6 +80,9 @@
       <form method="post" action="{{ url_for('admin.reviewer_devices_reset', user_id=person.id) }}" class="inline" data-confirm="Clear this reviewer's registered devices and sign them out?">{{ csrf() }}<button class="btn">Reset devices</button></form>
       {% endif %}
       <form method="post" action="{{ url_for('admin.reviewer_invite', user_id=person.id) }}" class="inline">{{ csrf() }}<button class="btn">{{ 'New invite link' if person.status == 'invited' else 'Create password reset link' }}</button></form>
+      {% if mail_ready and person.status != 'suspended' and not link %}
+      <form method="post" action="{{ url_for('admin.reviewer_send_invite', user_id=person.id) }}" class="inline">{{ csrf() }}<button class="btn">{{ 'Email a new invitation' if person.status == 'invited' else 'Email a password reset link' }}</button></form>
+      {% endif %}
     </div>
     <hr>
     <form method="post" action="{{ url_for('admin.reviewer_delete', user_id=person.id) }}" data-confirm="Permanently delete {{ person.name }}, their access and their feedback notes? This cannot be undone.">
