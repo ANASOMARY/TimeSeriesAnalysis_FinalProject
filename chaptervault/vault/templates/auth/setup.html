@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% from "_macros.html" import logo, csrf with context %}
+{% block title %}Set up{% endblock %}
+{% block body %}
+<main class="gate"><div class="gate-card">
+  <span class="brand">{{ logo() }} ChapterVault</span>
+  {% if locked %}
+  <h1>Setup link needed</h1>
+  <p class="lead">This vault has no author account yet. To create it, open the one-time setup link that the server printed when it started.</p>
+  <p class="gate-note">Restart the server to get a fresh link if you no longer have it.</p>
+  {% else %}
+  <h1>Create your author account</h1>
+  <p class="lead">This is the only account that can upload chapters and decide who reads them.</p>
+  {% if error %}<div class="flash bad" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('auth.setup') }}">
+    {{ csrf() }}<input type="hidden" name="token" value="{{ token }}">
+    <label>Your name <input type="text" name="name" value="{{ form.name }}" required autofocus autocomplete="name"></label>
+    <label>Email address <input type="email" name="email" value="{{ form.email }}" required autocomplete="username"></label>
+    <label>Password <input type="password" name="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters.</small></label>
+    <label>Repeat password <input type="password" name="confirm" required minlength="10" autocomplete="new-password"></label>
+    <button class="btn primary big">Create account</button>
+  </form>
+  {% endif %}
+</div></main>
+{% endblock %}

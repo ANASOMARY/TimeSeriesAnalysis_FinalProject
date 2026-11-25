@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% from "_macros.html" import logo, csrf with context %}
+{% block title %}Sign in{% endblock %}
+{% block body %}
+<main class="gate"><div class="gate-card">
+  <span class="brand">{{ logo() }} ChapterVault</span>
+  <h1>Sign in</h1>
+  <p class="lead">{% if site.book_title %}Review access for <em>{{ site.book_title }}</em>.{% else %}Private manuscript review.{% endif %}</p>
+  {% if notice %}<div class="flash ok" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="flash bad" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('auth.login') }}" autocomplete="on">
+    {{ csrf() }}
+    <label>Email address <input type="email" name="email" value="{{ email }}" required autofocus autocomplete="username"></label>
+    <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
+    <button class="btn primary big">Sign in</button>
+  </form>
+  <p class="gate-note">Access is by invitation. If you have lost your password or changed device, ask the author for a new link.</p>
+</div></main>
+{% endblock %}

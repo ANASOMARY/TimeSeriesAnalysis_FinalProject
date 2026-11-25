@@ -1,0 +1,60 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf with context %}
+{% set active = 'admin.chapters' %}
+{% block title %}Chapters{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <h1>Chapters</h1>
+  <p>Upload only the chapters you want reviewed. Files are converted to PDF, encrypted, and never offered for download.</p>
+</div></div>
+
+<section class="card">
+  <h2>Upload chapters</h2>
+  <p class="muted">Accepted: PDF, Word (.docx, .doc), OpenDocument, RTF, EPUB and plain text. You can select several files at once.</p>
+  <form method="post" action="{{ url_for('admin.upload') }}" enctype="multipart/form-data" id="upload-form">
+    {{ csrf() }}
+    <div class="drop">
+      <label><strong>Chapter files</strong>
+        <input type="file" name="files" id="upload-files" multiple required accept="{% for ext in accepted %}.{{ ext }}{% if not loop.last %},{% endif %}{% endfor %}">
+      </label>
+      <ul class="filelist" id="upload-list"></ul>
+    </div>
+    <div class="fields" id="single-fields">
+      <label>Title
+        <input type="text" name="title" maxlength="200" placeholder="Taken from the file name if left blank">
+      </label>
+      <label>Pages to share
+        <input type="text" name="page_range" placeholder="All pages" inputmode="text">
+        <small>Uploading the whole book? Enter a range such as 45-78 to keep only that chapter.</small>
+      </label>
+      <label class="wide">Note for reviewers <span class="muted">(optional)</span>
+        <input type="text" name="description" maxlength="2000" placeholder="For example: second draft, please focus on pacing">
+      </label>
+    </div>
+    <button class="btn primary">Upload and encrypt</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Your chapters</h2><span class="muted">{{ docs|length }} uploaded</span></div>
+  {% if not docs %}
+  <div class="empty"><strong>No chapters yet</strong>Upload your first chapter above.</div>
+  {% else %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Chapter</th><th>Status</th><th class="r">Pages</th><th class="r">Reviewers</th><th class="r">Opens</th><th class="r">Feedback</th><th>Uploaded</th></tr></thead>
+    <tbody>
+    {% for d in docs %}
+    <tr>
+      <td><a class="title" href="{{ url_for('admin.chapter', doc_id=d.id) }}">{{ d.title }}</a><span class="sub">{{ d.original_filename }} · {{ d.size_bytes|filesize }}</span></td>
+      <td>{% if d.status == 'active' %}<span class="badge ok">Active</span>{% else %}<span class="badge warn">Suspended</span>{% endif %}</td>
+      <td class="r num">{{ d.page_count }}</td>
+      <td class="r num">{{ d.reviewers }}</td>
+      <td class="r num">{{ d.opens }}</td>
+      <td class="r num">{{ d.feedback }}</td>
+      <td class="nowrap">{{ d.created_at|day }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</section>
+{% endblock %}

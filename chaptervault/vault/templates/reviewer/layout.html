@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% from "_macros.html" import logo, csrf, flashes with context %}
+{% block body %}
+<header class="topbar"><div class="topbar-in">
+  <a class="brand" href="{{ url_for('reviewer.library') }}">{{ logo() }} ChapterVault</a>
+  <div class="who">
+    <span>{{ me.name }}</span>
+    <a href="{{ url_for('auth.account') }}">Account</a>
+    <form method="post" action="{{ url_for('auth.logout') }}" class="inline">{{ csrf() }}<button class="linklike">Sign out</button></form>
+  </div>
+</div></header>
+<main class="page">
+  {{ flashes() }}
+  {% block content %}{% endblock %}
+</main>
+{% endblock %}

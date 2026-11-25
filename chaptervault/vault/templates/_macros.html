@@ -1,0 +1,95 @@
+{% macro logo() %}<svg viewBox="0 0 32 32" aria-hidden="true"><rect class="mark-bg" width="32" height="32" rx="8"/><path class="mark-fg" d="M7 9.6c3.1-1 6-.7 8.2 1v12.2c-2.2-1.6-5.1-2-8.2-1zM25 9.6c-3.1-1-6-.7-8.2 1v12.2c2.2-1.6 5.1-2 8.2-1z"/></svg>{% endmacro %}
+
+{% macro csrf() %}<input type="hidden" name="_csrf" value="{{ csrf_token() }}">{% endmacro %}
+
+{% macro flashes() %}{% for kind, message in take_flashes() %}<div class="flash {{ kind }}" role="status">{{ message }}</div>{% endfor %}{% endmacro %}
+
+{% macro rule_fields(rules) %}
+<div class="fields">
+  <label>Available from
+    <input type="date" name="starts_at" value="{{ rules.starts_at|dateinput }}">
+    <small>Blank means straight away.</small>
+  </label>
+  <label>Access ends
+    <input type="date" name="expires_at" value="{{ rules.expires_at|dateinput }}">
+    <small>End of that day (UTC). Blank means no end date.</small>
+  </label>
+  <label>Opens allowed
+    <input type="number" name="max_views" min="1" step="1" value="{{ rules.max_views if rules.max_views is not none else '' }}" placeholder="Unlimited">
+    <small>How many times the chapter may be opened.</small>
+  </label>
+  <label class="check field-end">
+    <input type="checkbox" name="allow_comments" value="1" {% if rules.allow_comments %}checked{% endif %}>
+    <span>May leave feedback notes</span>
+  </label>
+</div>
+{% endmacro %}
+
+{# One expandable row per grant. `by` is "user" on a chapter page and "doc" on a reviewer page. #}
+{% macro grant_list(rows, by) %}
+<div class="grant-head" aria-hidden="true">
+  <span>{{ 'Reviewer' if by == 'user' else 'Chapter' }}</span><span>Status</span><span>Access ends</span><span>Opens</span><span>Progress</span><span></span>
+</div>
+{% for row in rows %}
+<details class="grant">
+  <summary>
+    <span class="who">
+      {% if by == 'user' %}<b>{{ row.user.name }}</b><span>{{ row.user.email }}</span>
+      {% else %}<b>{{ row.doc.title }}</b><span>{{ row.doc.page_count }} pages</span>{% endif %}
+    </span>
+    <span class="cell"><span class="badge {{ row.tone }}">{{ row.label }}</span></span>
+    <span class="cell">{{ row.grant.expires_at|day if row.grant.expires_at else 'No end date' }}
+      {% if row.grant.starts_at %}<small>from {{ row.grant.starts_at|day }}</small>{% endif %}</span>
+    <span class="cell num">{{ row.grant.views_used }}{% if row.grant.max_views is not none %} of {{ row.grant.max_views }}{% endif %}</span>
+    <span class="cell">
+      <progress value="{{ row.pages_read }}" max="{{ row.doc.page_count }}">{{ row.pages_read }} of {{ row.doc.page_count }}</progress>
+      <small>{{ row.pages_read }} of {{ row.doc.page_count }} pages · {{ row.grant.seconds_read|duration }}</small>
+    </span>
+    <span class="chev">
+      <form method="post" action="{{ url_for('admin.grant_update', grant_id=row.grant.id) }}" class="inline">
+        {{ csrf() }}<input type="hidden" name="next" value="{{ request.path }}">
+        {% if row.grant.status == 'active' %}
+        <button class="btn small danger" name="action" value="revoke">Revoke</button>
+        {% else %}
+        <button class="btn small" name="action" value="restore">Restore</button>
+        {% endif %}
+      </form>
+      <span>Edit ▾</span>
+    </span>
+  </summary>
+  <div class="edit">
+    <form method="post" action="{{ url_for('admin.grant_update', grant_id=row.grant.id) }}">
+      {{ csrf() }}<input type="hidden" name="next" value="{{ request.path }}">
+      {{ rule_fields(row.grant) }}
+      <div class="actions">
+        <button class="btn primary" name="action" value="save">Save rules</button>
+        <button class="btn" name="action" value="reset_views">Reset open count</button>
+        {% if by == 'user' %}<a class="btn" href="{{ url_for('admin.reviewer', user_id=row.user.id) }}">Reviewer page</a>
+        {% else %}<a class="btn" href="{{ url_for('admin.chapter', doc_id=row.doc.id) }}">Chapter page</a>{% endif %}
+      </div>
+      <p class="fine">Granted {{ row.grant.created_at|day }} · last read {{ row.grant.last_viewed_at|ago }} · {{ row.comments }} feedback note{{ '' if row.comments == 1 else 's' }}</p>
+    </form>
+  </div>
+</details>
+{% endfor %}
+{% endmacro %}
+
+{% macro event_table(events, show_who=true, show_subject=true) %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>When (UTC)</th><th>Event</th>{% if show_who %}<th>Who</th>{% endif %}{% if show_subject %}<th>Chapter</th>{% endif %}<th>Detail</th><th>IP address</th></tr></thead>
+  <tbody>
+  {% for e in events %}
+  <tr{% if e.kind|is_alert %} class="alert"{% endif %}>
+    <td class="nowrap num">{{ e.ts|dt }}</td>
+    <td>{% if e.kind|is_alert %}<span class="badge bad">{{ e.kind|event_label }}</span>{% else %}{{ e.kind|event_label }}{% endif %}</td>
+    {% if show_who %}<td>{{ e.actor or '—' }}</td>{% endif %}
+    {% if show_subject %}<td>{{ e.subject or '—' }}{% if e.page %} <span class="muted">p. {{ e.page }}</span>{% endif %}</td>{% endif %}
+    <td>{% if not show_subject and e.page %}p. {{ e.page }} {% endif %}{{ e.detail }}</td>
+    <td class="num">{{ e.ip or '—' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}

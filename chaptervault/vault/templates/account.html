@@ -1,0 +1,30 @@
+{% extends ("admin/layout.html" if me.role == 'admin' else "reviewer/layout.html") %}{% from "_macros.html" import csrf with context %}
+{% block title %}Account{% endblock %}
+{% block content %}
+<div class="head"><div><h1>Your account</h1><p>{{ me.name }} · {{ me.email }}</p></div></div>
+<div class="grid2">
+  <section class="card">
+    <h2>Change password</h2>
+    <p class="muted">Changing it signs you out everywhere else.</p>
+    {% if error %}<div class="flash bad" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="{{ url_for('auth.account') }}">
+      {{ csrf() }}
+      <div class="fields">
+        <label class="wide">Current password <input type="password" name="current" required autocomplete="current-password"></label>
+        <label>New password <input type="password" name="password" required minlength="10" autocomplete="new-password"></label>
+        <label>Repeat new password <input type="password" name="confirm" required minlength="10" autocomplete="new-password"></label>
+      </div>
+      <button class="btn primary">Change password</button>
+    </form>
+  </section>
+  {% if me.role == 'reviewer' %}
+  <section class="card">
+    <h2>Your devices</h2>
+    <p class="muted">You can sign in from up to {{ me.max_devices }} device{{ '' if me.max_devices == 1 else 's' }}. To move to a new one, ask the author to reset them.</p>
+    <table><thead><tr><th>Device</th><th>First used</th><th>Last used</th></tr></thead><tbody>
+    {% for d in devices %}<tr><td>{{ d.label }}</td><td>{{ d.first_seen|day }}</td><td>{{ d.last_seen|ago }}</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

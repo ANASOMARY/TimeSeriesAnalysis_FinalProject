@@ -1,0 +1,88 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf, rule_fields, grant_list, event_table with context %}
+{% set active = 'admin.reviewers' %}
+{% block title %}{{ person.name }}{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <div class="crumb"><a href="{{ url_for('admin.reviewers') }}">Reviewers</a> /</div>
+  <h1>{{ person.name }}</h1>
+  <p>{% if person.status == 'active' %}<span class="badge ok">Active</span>{% elif person.status == 'invited' %}<span class="badge info">Invite pending</span>{% else %}<span class="badge warn">Suspended</span>{% endif %}
+    {{ person.email }} · added {{ person.created_at|day }} · last signed in {{ person.last_login_at|ago }}
+    {% if person.nda_accepted_at %} · accepted terms {{ person.nda_accepted_at|day }}{% endif %}</p>
+</div>
+<div class="actions">
+  <form method="post" action="{{ url_for('admin.reviewer_status', user_id=person.id) }}" class="inline">{{ csrf() }}
+    {% if person.status == 'suspended' %}<button class="btn" name="action" value="activate">Re-activate</button>
+    {% else %}<button class="btn" name="action" value="suspend">Suspend</button>{% endif %}
+  </form>
+</div></div>
+
+{% if link %}
+<section class="card invite">
+  <h2>{{ 'Invite link' if person.status == 'invited' else 'Password reset link' }}</h2>
+  <p class="muted">Send this to {{ person.name }} so they can set a password. It works once and expires on {{ person.invite_expires_at|day }}.</p>
+  <div class="linkbox">
+    <input type="text" id="invite-link" value="{{ link }}" readonly aria-label="Invite link">
+    <button type="button" class="btn" data-copy="invite-link">Copy link</button>
+    <a class="btn" href="{{ mailto }}">Write email</a>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>Chapters this reviewer can read</h2><span class="muted">{{ grants|length }} chapter{{ '' if grants|length == 1 else 's' }}</span></div>
+  {% if grants %}{{ grant_list(grants, 'doc') }}{% else %}<div class="empty"><strong>No chapters shared yet</strong>Choose chapters below.</div>{% endif %}
+</section>
+
+{% if available %}
+<section class="card">
+  <h2>Share more chapters</h2>
+  <form method="post" action="{{ url_for('admin.grants_create') }}">
+    {{ csrf() }}<input type="hidden" name="next" value="{{ request.path }}"><input type="hidden" name="users" value="{{ person.id }}">
+    <div class="checklist">
+      {% for d in available %}<label class="check"><input type="checkbox" name="documents" value="{{ d.id }}"><span>{{ d.title }}<small>{{ d.page_count }} pages</small></span></label>{% endfor %}
+    </div>
+    {{ rule_fields(defaults) }}
+    <button class="btn primary">Give access</button>
+  </form>
+</section>
+{% endif %}
+
+<div class="grid2">
+  <section class="card">
+    <h2>Details</h2>
+    <form method="post" action="{{ url_for('admin.reviewer_update', user_id=person.id) }}">
+      {{ csrf() }}
+      <div class="fields">
+        <label>Name <input type="text" name="name" value="{{ person.name }}" maxlength="120" required></label>
+        <label>Email address <input type="email" name="email" value="{{ person.email }}" maxlength="200" required></label>
+        <label>Device limit <input type="number" name="max_devices" value="{{ person.max_devices }}" min="1" max="10" required><small>How many browsers or devices they may sign in from.</small></label>
+        <label>Private note <input type="text" name="note" value="{{ person.note }}" maxlength="500"></label>
+      </div>
+      <button class="btn">Save details</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Sign-in and devices</h2>
+    {% if devices %}
+    <table><thead><tr><th>Device</th><th>First used</th><th>Last used</th></tr></thead><tbody>
+      {% for d in devices %}<tr><td>{{ d.label }}<span class="sub">{{ d.ip }}</span></td><td>{{ d.first_seen|day }}</td><td>{{ d.last_seen|ago }}</td></tr>{% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No device registered yet. The first {{ person.max_devices }} they sign in from will be registered.</p>{% endif %}
+    <div class="actions">
+      {% if devices %}
+      <form method="post" action="{{ url_for('admin.reviewer_devices_reset', user_id=person.id) }}" class="inline" data-confirm="Clear this reviewer's registered devices and sign them out?">{{ csrf() }}<button class="btn">Reset devices</button></form>
+      {% endif %}
+      <form method="post" action="{{ url_for('admin.reviewer_invite', user_id=person.id) }}" class="inline">{{ csrf() }}<button class="btn">{{ 'New invite link' if person.status == 'invited' else 'Create password reset link' }}</button></form>
+    </div>
+    <hr>
+    <form method="post" action="{{ url_for('admin.reviewer_delete', user_id=person.id) }}" data-confirm="Permanently delete {{ person.name }}, their access and their feedback notes? This cannot be undone.">
+      {{ csrf() }}<button class="btn danger">Delete this reviewer</button>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-head"><h2>Activity</h2><a href="{{ url_for('admin.activity', reviewer=person.id, show='everything') }}">Full log</a></div>
+  {% if events %}{{ event_table(events, show_who=false) }}{% else %}<div class="empty">Nothing yet.</div>{% endif %}
+</section>
+{% endblock %}

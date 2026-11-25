@@ -1,0 +1,91 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf, rule_fields, grant_list, event_table with context %}
+{% set active = 'admin.chapters' %}
+{% block title %}{{ doc.title }}{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <div class="crumb"><a href="{{ url_for('admin.chapters') }}">Chapters</a> /</div>
+  <h1>{{ doc.title }}</h1>
+  <p>{% if doc.status == 'active' %}<span class="badge ok">Active</span>{% else %}<span class="badge warn">Suspended</span>{% endif %}
+    {{ doc.page_count }} pages · {{ doc.size_bytes|filesize }} · from {{ doc.original_filename }} · uploaded {{ doc.created_at|day }}</p>
+</div>
+<div class="actions">
+  <form method="post" action="{{ url_for('admin.chapter_preview', doc_id=doc.id) }}" class="inline">{{ csrf() }}<button class="btn primary">Preview as a reviewer sees it</button></form>
+  <form method="post" action="{{ url_for('admin.chapter_status', doc_id=doc.id) }}" class="inline">{{ csrf() }}
+    {% if doc.status == 'active' %}<button class="btn" name="action" value="suspend">Suspend</button>
+    {% else %}<button class="btn" name="action" value="activate">Re-activate</button>{% endif %}
+  </form>
+</div></div>
+
+<section class="card">
+  <div class="card-head"><h2>Who can read this chapter</h2><span class="muted">{{ grants|length }} reviewer{{ '' if grants|length == 1 else 's' }}</span></div>
+  {% if grants %}{{ grant_list(grants, 'user') }}{% else %}<div class="empty"><strong>Nobody yet</strong>Give access to one or more reviewers below.</div>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Give access</h2>
+  {% if available %}
+  <p class="muted">Tick the reviewers who should read this chapter and set the rules.</p>
+  <form method="post" action="{{ url_for('admin.grants_create') }}">
+    {{ csrf() }}<input type="hidden" name="next" value="{{ request.path }}"><input type="hidden" name="documents" value="{{ doc.id }}">
+    <div class="checklist">
+      {% for u in available %}
+      <label class="check"><input type="checkbox" name="users" value="{{ u.id }}"><span>{{ u.name }}<small>{{ u.email }}</small></span></label>
+      {% endfor %}
+    </div>
+    {{ rule_fields(defaults) }}
+    <button class="btn primary">Give access</button>
+  </form>
+  {% else %}
+  <p class="muted">Every reviewer already has a rule for this chapter. <a href="{{ url_for('admin.reviewers') }}">Add another reviewer</a> to share it more widely.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Feedback from reviewers</h2>
+    {% if feedback %}<a class="btn small" href="{{ url_for('admin.chapter_feedback_csv', doc_id=doc.id) }}">Download as spreadsheet</a>{% endif %}</div>
+  {% if feedback %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Page</th><th>Reviewer</th><th>Note</th><th>Written</th></tr></thead>
+    <tbody>{% for c in feedback %}
+      <tr><td class="num">{{ c.page }}</td><td class="nowrap">{{ c.name }}</td><td class="quote">{{ c.body }}</td><td class="nowrap">{{ c.created_at|dt }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="empty">No feedback yet. Reviewers can attach notes to any page while reading.</div>{% endif %}
+</section>
+
+<div class="grid2">
+  <section class="card">
+    <h2>Details</h2>
+    <form method="post" action="{{ url_for('admin.chapter_update', doc_id=doc.id) }}">
+      {{ csrf() }}
+      <div class="fields">
+        <label class="wide">Title <input type="text" name="title" value="{{ doc.title }}" maxlength="200" required></label>
+        <label class="wide">Note for reviewers <textarea name="description" maxlength="2000">{{ doc.description }}</textarea></label>
+      </div>
+      <button class="btn">Save details</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Replace the file</h2>
+    <p class="muted">Upload a revised draft. Reviewers keep their access rules and see the new version.</p>
+    <form method="post" action="{{ url_for('admin.chapter_replace', doc_id=doc.id) }}" enctype="multipart/form-data">
+      {{ csrf() }}
+      <div class="fields">
+        <label class="wide">Revised file <input type="file" name="file" required></label>
+        <label class="wide">Pages to share <input type="text" name="page_range" placeholder="All pages"></label>
+      </div>
+      <button class="btn">Replace file</button>
+    </form>
+    <hr>
+    <form method="post" action="{{ url_for('admin.chapter_delete', doc_id=doc.id) }}" data-confirm="Permanently delete “{{ doc.title }}”, its access rules and its feedback? This cannot be undone.">
+      {{ csrf() }}<button class="btn danger">Delete this chapter</button>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-head"><h2>Activity on this chapter</h2><a href="{{ url_for('admin.activity', chapter=doc.id, show='everything') }}">Full log</a></div>
+  {% if events %}{{ event_table(events, show_subject=false) }}{% else %}<div class="empty">Nothing yet.</div>{% endif %}
+  <p class="fine">File fingerprint (SHA-256): {{ doc.sha256 }}</p>
+</section>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf with context %}
+{% set active = 'admin.access_matrix' %}
+{% block title %}Access{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <h1>Access</h1>
+  <p>Tick a box to let a reviewer read a chapter; untick it to revoke. New grants use your default rules ({% if defaults.expires_at %}ending {{ defaults.expires_at|day }}{% else %}no end date{% endif %}, {% if defaults.max_views %}{{ defaults.max_views }} opens{% else %}unlimited opens{% endif %}).</p>
+</div></div>
+{% if not people or not docs %}
+<div class="card empty"><strong>Nothing to match up yet</strong>You need at least one <a href="{{ url_for('admin.chapters') }}">chapter</a> and one <a href="{{ url_for('admin.reviewers') }}">reviewer</a>.</div>
+{% else %}
+<form method="post" action="{{ url_for('admin.access_matrix') }}" class="card">
+  {{ csrf() }}
+  <div class="table-wrap"><table class="matrix">
+    <thead><tr><th>Reviewer</th>{% for d in docs %}<th class="col"><a href="{{ url_for('admin.chapter', doc_id=d.id) }}">{{ d.title }}</a></th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for p in people %}
+    <tr>
+      <td><a class="title" href="{{ url_for('admin.reviewer', user_id=p.id) }}">{{ p.name }}</a><span class="sub">{{ p.email }}</span></td>
+      {% for d in docs %}{% set cell = cells.get((p.id, d.id)) %}
+      <td class="cellbox">
+        <input type="checkbox" name="cell" value="{{ p.id }}:{{ d.id }}" aria-label="{{ p.name }} may read {{ d.title }}"{% if cell and cell.active %} checked{% endif %}>
+        {% if cell and cell.label != 'Active' %}<span class="badge {{ cell.tone }}">{{ cell.label }}</span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <hr>
+  <button class="btn primary">Save access</button>
+</form>
+{% endif %}
+{% endblock %}

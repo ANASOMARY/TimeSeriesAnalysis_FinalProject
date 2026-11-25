@@ -1,0 +1,39 @@
+{% extends "reviewer/layout.html" %}{% from "_macros.html" import csrf with context %}
+{% block title %}Your chapters{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <h1>{% if site.book_title %}{{ site.book_title }}{% else %}Chapters for your review{% endif %}</h1>
+  <p>{% if site.author_name %}Shared with you by {{ site.author_name }}. {% endif %}These chapters are confidential: every page carries your name, and reading is logged.</p>
+</div></div>
+{% if not items %}
+<div class="card empty"><strong>Nothing to read yet</strong>The author has not shared any chapters with you so far. You will find them here once they do.</div>
+{% else %}
+<div class="shelf">
+{% for item in items %}
+  <article class="book{% if item.code != 'ok' %} off{% endif %}">
+    <h2>{{ item.doc.title }}</h2>
+    {% if item.doc.description %}<p>{{ item.doc.description }}</p>{% endif %}
+    <div class="meta">
+      <span>{{ item.doc.page_count }} pages</span>
+      {% if item.days_left is not none and item.code == 'ok' %}<span>{% if item.days_left < 1 %}Access ends today{% else %}{{ item.days_left }} day{{ '' if item.days_left == 1 else 's' }} left{% endif %}</span>{% endif %}
+      {% if item.opens_left is not none and item.code == 'ok' %}<span>{{ item.opens_left }} open{{ '' if item.opens_left == 1 else 's' }} left</span>{% endif %}
+      {% if item.comments %}<span>{{ item.comments }} note{{ '' if item.comments == 1 else 's' }} written</span>{% endif %}
+    </div>
+    <div>
+      <progress value="{{ item.pages_read }}" max="{{ item.doc.page_count }}">{{ item.pages_read }} of {{ item.doc.page_count }}</progress>
+      <small>{{ item.pages_read }} of {{ item.doc.page_count }} pages read</small>
+    </div>
+    <div class="foot">
+      {% if item.code == 'ok' %}
+      <form method="post" action="{{ url_for('reviewer.open_chapter', doc_id=item.doc.id) }}">{{ csrf() }}
+        <button class="btn primary big">{{ 'Continue reading' if item.pages_read else 'Start reading' }}</button>
+      </form>
+      {% else %}
+      <div class="flash warn">{{ item.message }}</div>
+      {% endif %}
+    </div>
+  </article>
+{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

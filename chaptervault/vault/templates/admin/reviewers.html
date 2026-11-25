@@ -1,0 +1,53 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf with context %}
+{% set active = 'admin.reviewers' %}
+{% block title %}Reviewers{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <h1>Reviewers</h1>
+  <p>Each reviewer signs in with their own password, on a limited number of devices, and sees only the chapters you grant.</p>
+</div></div>
+
+<section class="card">
+  <h2>Add a reviewer</h2>
+  <p class="muted">You will get a personal invite link to send them.</p>
+  <form method="post" action="{{ url_for('admin.reviewer_add') }}">
+    {{ csrf() }}
+    <div class="fields">
+      <label>Name <input type="text" name="name" maxlength="120" required autocomplete="off"></label>
+      <label>Email address <input type="email" name="email" maxlength="200" required autocomplete="off"></label>
+      <label class="wide">Private note <span class="muted">(only you see this)</span> <input type="text" name="note" maxlength="500" placeholder="For example: beta reader, medical accuracy"></label>
+    </div>
+    {% if docs %}
+    <strong>Chapters to share now</strong>
+    <div class="checklist">
+      {% for d in docs %}<label class="check"><input type="checkbox" name="documents" value="{{ d.id }}"><span>{{ d.title }}</span></label>{% endfor %}
+    </div>
+    <p class="fine">Uses your default rules: {% if defaults.expires_at %}access ends {{ defaults.expires_at|day }}{% else %}no end date{% endif %}, {% if defaults.max_views %}{{ defaults.max_views }} opens{% else %}unlimited opens{% endif %}. You can adjust each one afterwards.</p>
+    {% endif %}
+    <button class="btn primary">Add reviewer</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Your reviewers</h2><span class="muted">{{ people|length }} in total</span></div>
+  {% if not people %}
+  <div class="empty"><strong>No reviewers yet</strong>Add the first one above.</div>
+  {% else %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Reviewer</th><th>Status</th><th class="r">Chapters</th><th class="r">Devices</th><th>Last signed in</th><th>Last read</th></tr></thead>
+    <tbody>
+    {% for p in people %}
+    <tr>
+      <td><a class="title" href="{{ url_for('admin.reviewer', user_id=p.id) }}">{{ p.name }}</a><span class="sub">{{ p.email }}{% if p.note %} · {{ p.note }}{% endif %}</span></td>
+      <td>{% if p.status == 'active' %}<span class="badge ok">Active</span>{% elif p.status == 'invited' %}<span class="badge info">Invite pending</span>{% else %}<span class="badge warn">Suspended</span>{% endif %}</td>
+      <td class="r num">{{ p.chapters }}</td>
+      <td class="r num">{{ p.devices }} of {{ p.max_devices }}</td>
+      <td>{{ p.last_login_at|ago }}</td>
+      <td>{{ p.last_read|ago }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf with context %}
+{% set active = 'admin.settings' %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="head"><div><h1>Settings</h1><p>Defaults for new access grants, and what reviewers see.</p></div></div>
+<form method="post" action="{{ url_for('admin.settings') }}">
+  {{ csrf() }}
+  <section class="card">
+    <h2>Your book</h2>
+    <p class="muted">Shown to reviewers on the sign-in page and in their library.</p>
+    <div class="fields">
+      <label>Book title <input type="text" name="book_title" value="{{ site.book_title }}" maxlength="200"></label>
+      <label>Author name <input type="text" name="author_name" value="{{ site.author_name }}" maxlength="120"></label>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Defaults for new access</h2>
+    <p class="muted">Applied when you grant access from the Access grid or while adding a reviewer. Existing grants are not changed.</p>
+    <div class="fields">
+      <label>Access period, in days <input type="number" name="default_expiry_days" value="{{ site.default_expiry_days }}" min="1" max="3650" placeholder="No end date"></label>
+      <label>Opens allowed <input type="number" name="default_max_views" value="{{ site.default_max_views }}" min="1" placeholder="Unlimited"></label>
+      <label>Devices per reviewer <input type="number" name="default_max_devices" value="{{ site.default_max_devices }}" min="1" max="10" required></label>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Watermark</h2>
+    <p class="muted">Every page is stamped with the reviewer's name, email address, the time and their IP address. This line is added at the foot of each page.</p>
+    <div class="fields">
+      <label class="wide">Notice line <input type="text" name="watermark_notice" value="{{ site.watermark_notice }}" maxlength="120"></label>
+      <label>Strength, 4 to 40 <input type="number" name="watermark_opacity" value="{{ site.watermark_opacity }}" min="4" max="40" required><small>Higher is more visible. 14 is readable without getting in the way.</small></label>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Confidentiality terms</h2>
+    <label class="check"><input type="checkbox" name="require_nda" value="1"{% if site.require_nda == '1' %} checked{% endif %}><span>Reviewers must accept these terms before they can open anything</span></label>
+    <div class="fields">
+      <label class="wide">Terms <textarea name="nda_text" rows="9" maxlength="8000">{{ site.nda_text }}</textarea></label>
+    </div>
+  </section>
+  <button class="btn primary big">Save settings</button>
+</form>
+{% endblock %}

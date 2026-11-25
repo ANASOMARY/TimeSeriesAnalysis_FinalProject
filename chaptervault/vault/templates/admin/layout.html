@@ -1,0 +1,25 @@
+{% extends "base.html" %}{% from "_macros.html" import logo, csrf, flashes with context %}
+{% set nav = [('admin.dashboard', 'Overview'), ('admin.chapters', 'Chapters'), ('admin.reviewers', 'Reviewers'), ('admin.access_matrix', 'Access'), ('admin.activity', 'Activity'), ('admin.settings', 'Settings')] %}
+{% block body %}
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="{{ url_for('admin.dashboard') }}">{{ logo() }} ChapterVault</a>
+    <nav aria-label="Main">
+      {% for endpoint, label in nav %}
+      <a href="{{ url_for(endpoint) }}"{% if active == endpoint %} class="on" aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <div class="side-foot">
+      <strong>{{ me.name }}</strong>
+      <div class="row">
+        <a href="{{ url_for('auth.account') }}">Account</a>
+        <form method="post" action="{{ url_for('auth.logout') }}" class="inline">{{ csrf() }}<button class="linklike">Sign out</button></form>
+      </div>
+    </div>
+  </aside>
+  <main class="main">
+    {{ flashes() }}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% endblock %}

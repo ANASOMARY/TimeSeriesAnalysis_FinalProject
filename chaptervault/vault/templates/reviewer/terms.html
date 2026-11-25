@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% from "_macros.html" import logo, csrf with context %}
+{% block title %}Confidentiality{% endblock %}
+{% block body %}
+<main class="gate"><div class="gate-card wide">
+  <span class="brand">{{ logo() }} ChapterVault</span>
+  <h1>Before you start reading</h1>
+  <p class="lead">Please read and accept the author's confidentiality terms.</p>
+  {% if error %}<div class="flash bad" role="alert">{{ error }}</div>{% endif %}
+  <div class="terms" tabindex="0">{{ site.nda_text }}</div>
+  <form method="post" action="{{ url_for('reviewer.terms') }}">
+    {{ csrf() }}
+    <label class="check"><input type="checkbox" name="agree" value="1" required><span>I, {{ me.name }}, have read these terms and agree to them.</span></label>
+    <button class="btn primary big">Agree and continue</button>
+  </form>
+</div></main>
+{% endblock %}

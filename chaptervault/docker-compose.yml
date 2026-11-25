@@ -1,0 +1,29 @@
+# Runs ChapterVault behind Caddy, which obtains and renews an HTTPS certificate automatically.
+#
+#   DOMAIN=review.example.com docker compose up -d --build
+#   docker compose logs app        # shows the one-time link for creating your author account
+#
+# Point the DOMAIN's DNS record at this server first, and keep ports 80 and 443 open.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      CHAPTERVAULT_BEHIND_PROXY: "1"
+      CHAPTERVAULT_BASE_URL: "https://${DOMAIN:?set DOMAIN to the address reviewers will use}"
+    volumes:
+      - vault-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${DOMAIN} --to app:8000
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+
+volumes:
+  vault-data:
+  caddy-data:

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>{% block title %}ChapterVault{% endblock %} · ChapterVault</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=app_version) }}">
+{% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% block body %}{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='app.js', v=app_version) }}" defer></script>{% endblock %}
+</body>
+</html>

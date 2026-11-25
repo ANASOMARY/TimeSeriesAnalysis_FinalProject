@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% from "_macros.html" import logo, csrf with context %}
+{% block title %}Welcome{% endblock %}
+{% block body %}
+<main class="gate"><div class="gate-card">
+  <span class="brand">{{ logo() }} ChapterVault</span>
+  <h1>Welcome, {{ user.name }}</h1>
+  <p class="lead">{% if site.author_name %}{{ site.author_name }} has{% else %}You have been{% endif %} invited {% if site.author_name %}you {% endif %}to review {% if site.book_title %}chapters of <em>{{ site.book_title }}</em>{% else %}manuscript chapters{% endif %}. Choose a password to open your reading room.</p>
+  {% if error %}<div class="flash bad" role="alert">{{ error }}</div>{% endif %}
+  <form method="post">
+    {{ csrf() }}
+    <label>Email address <input type="email" value="{{ user.email }}" readonly autocomplete="username"></label>
+    <label>Choose a password <input type="password" name="password" required minlength="10" autofocus autocomplete="new-password"><small>At least 10 characters.</small></label>
+    <label>Repeat password <input type="password" name="confirm" required minlength="10" autocomplete="new-password"></label>
+    <button class="btn primary big">Set password</button>
+  </form>
+  <p class="gate-note">This link is personal to you and works once. Your account is tied to the {{ user.max_devices }} device{{ '' if user.max_devices == 1 else 's' }} you first sign in from.</p>
+</div></main>
+{% endblock %}

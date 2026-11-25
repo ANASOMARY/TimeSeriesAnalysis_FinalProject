@@ -1,0 +1,56 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import event_table with context %}
+{% set active = 'admin.dashboard' %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <h1>{% if site.book_title %}{{ site.book_title }}{% else %}Overview{% endif %}</h1>
+  <p>Who can read what, and what they have done with it.</p>
+</div>
+<div class="actions"><a class="btn primary" href="{{ url_for('admin.chapters') }}">Upload chapters</a></div></div>
+
+{% if not stats.chapters or not stats.reviewers or not stats.grants %}
+<section class="card">
+  <h2>Getting started</h2>
+  <p class="muted">Three steps to put a chapter in front of a reviewer.</p>
+  <ol class="steps">
+    <li{% if stats.chapters %} class="done"{% endif %}><div><strong>Upload the chapters you want reviewed</strong><p>PDF or Word files. Each one is encrypted as soon as it arrives.</p></div><a class="btn small" href="{{ url_for('admin.chapters') }}">Chapters</a></li>
+    <li{% if stats.reviewers %} class="done"{% endif %}><div><strong>Add your reviewers</strong><p>Each gets a personal invite link to set their own password.</p></div><a class="btn small" href="{{ url_for('admin.reviewers') }}">Reviewers</a></li>
+    <li{% if stats.grants %} class="done"{% endif %}><div><strong>Choose who reads which chapter</strong><p>Set an end date and an open limit, and revoke at any time.</p></div><a class="btn small" href="{{ url_for('admin.access_matrix') }}">Access</a></li>
+  </ol>
+</section>
+{% endif %}
+
+<div class="stats">
+  <div class="stat"><b>{{ stats.chapters }}</b><span>Chapters</span></div>
+  <div class="stat"><b>{{ stats.reviewers }}</b><span>Reviewers{% if stats.pending %} · {{ stats.pending }} not yet joined{% endif %}</span></div>
+  <div class="stat"><b>{{ stats.grants }}</b><span>Active access grants</span></div>
+  <div class="stat"><b>{{ stats.opens }}</b><span>Opens in the last 7 days</span></div>
+  <div class="stat"><b>{{ stats.feedback }}</b><span>Feedback notes</span></div>
+  <div class="stat{% if stats.alerts %} alert{% endif %}"><b>{{ stats.alerts }}</b><span>Security alerts, last 7 days</span></div>
+</div>
+
+{% if reading %}
+<section class="card">
+  <div class="card-head"><h2>Recently read</h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Reviewer</th><th>Chapter</th><th>Progress</th><th>Time reading</th><th>Last read</th></tr></thead>
+    <tbody>
+    {% for row in reading %}
+    <tr>
+      <td><a class="title" href="{{ url_for('admin.reviewer', user_id=row.user.id) }}">{{ row.user.name }}</a></td>
+      <td><a href="{{ url_for('admin.chapter', doc_id=row.doc.id) }}">{{ row.doc.title }}</a></td>
+      <td><progress value="{{ row.pages_read }}" max="{{ row.doc.page_count }}"></progress><small>{{ row.pages_read }} of {{ row.doc.page_count }} pages</small></td>
+      <td>{{ row.grant.seconds_read|duration }}</td>
+      <td>{{ row.grant.last_viewed_at|ago }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>Latest activity</h2><a href="{{ url_for('admin.activity') }}">Full log</a></div>
+  {% if events %}{{ event_table(events) }}{% else %}<div class="empty">Nothing has happened yet.</div>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,234 @@
+"""SQLite storage."""
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+from flask import current_app, g
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  role TEXT NOT NULL CHECK (role IN ('admin','reviewer')),
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT,
+  status TEXT NOT NULL DEFAULT 'invited' CHECK (status IN ('invited','active','suspended')),
+  invite_token_hash TEXT,
+  invite_token_enc BLOB,
+  invite_expires_at TEXT,
+  max_devices INTEGER NOT NULL DEFAULT 2,
+  failed_logins INTEGER NOT NULL DEFAULT 0,
+  locked_until TEXT,
+  nda_accepted_at TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  last_login_at TEXT
+);
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  original_filename TEXT NOT NULL,
+  source_format TEXT NOT NULL,
+  page_count INTEGER NOT NULL,
+  pages_json TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  blob_name TEXT NOT NULL UNIQUE,
+  sha256 TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS grants (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  starts_at TEXT,
+  expires_at TEXT,
+  max_views INTEGER,
+  views_used INTEGER NOT NULL DEFAULT 0,
+  seconds_read INTEGER NOT NULL DEFAULT 0,
+  allow_comments INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+  created_at TEXT NOT NULL,
+  revoked_at TEXT,
+  last_viewed_at TEXT,
+  UNIQUE (user_id, document_id)
+);
+CREATE TABLE IF NOT EXISTS devices (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  UNIQUE (user_id, token_hash)
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+  csrf TEXT NOT NULL,
+  flash TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  ip TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS views (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  grant_id INTEGER REFERENCES grants(id) ON DELETE CASCADE,
+  stamp TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  pinged_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+-- The audit trail deliberately has no foreign keys: it must outlive the
+-- reviewers and chapters it describes, so names are copied into each row.
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY,
+  ts TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  user_id INTEGER,
+  document_id INTEGER,
+  view_id INTEGER,
+  page INTEGER,
+  actor TEXT NOT NULL DEFAULT '',
+  subject TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
+CREATE INDEX IF NOT EXISTS events_user_doc ON events (user_id, document_id, kind);
+CREATE INDEX IF NOT EXISTS events_view_page ON events (view_id, page);
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  page INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"""
+
+ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime(ISO)
+
+
+def now_iso() -> str:
+    return iso(utcnow())
+
+
+def parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.strptime(value, ISO).replace(tzinfo=timezone.utc)
+
+
+def in_future(**delta) -> str:
+    return iso(utcnow() + timedelta(**delta))
+
+
+def connect(path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, timeout=15, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
+
+
+def get() -> sqlite3.Connection:
+    if "db" not in g:
+        g.db = connect(current_app.config["VAULT"].db_path)
+    return g.db
+
+
+def all(sql: str, *args) -> list[sqlite3.Row]:  # noqa: A001 - mirrors cursor.fetchall
+    return get().execute(sql, args).fetchall()
+
+
+def one(sql: str, *args) -> sqlite3.Row | None:
+    return get().execute(sql, args).fetchone()
+
+
+def scalar(sql: str, *args):
+    row = get().execute(sql, args).fetchone()
+    return row[0] if row else None
+
+
+def run(sql: str, *args) -> sqlite3.Cursor:
+    return get().execute(sql, args)
+
+
+def init_app(app) -> None:
+    conn = connect(app.config["VAULT"].db_path)
+    conn.executescript(SCHEMA)
+    conn.close()
+
+    @app.teardown_appcontext
+    def _close(_exc):
+        conn = g.pop("db", None)
+        if conn is not None:
+            conn.close()
+
+
+# ---------------------------------------------------------------- settings
+
+DEFAULT_NDA = (
+    "The chapters you are about to read are unpublished, confidential drafts shared with you "
+    "solely so that you can review them.\n\n"
+    "By continuing you agree that you will not copy, photograph, screenshot, record, forward or "
+    "otherwise share any part of this material, and that you will not discuss its contents with "
+    "anyone other than the author without the author's written permission.\n\n"
+    "Every page you open is marked with your name and email address, and your access is logged."
+)
+
+DEFAULT_SETTINGS = {
+    "book_title": "",
+    "author_name": "",
+    "default_expiry_days": "30",
+    "default_max_views": "",
+    "default_max_devices": "2",
+    "require_nda": "1",
+    "nda_text": DEFAULT_NDA,
+    "watermark_notice": "Confidential review copy - do not copy or distribute",
+    "watermark_opacity": "14",
+}
+
+
+def settings() -> dict[str, str]:
+    if "settings" not in g:
+        values = dict(DEFAULT_SETTINGS)
+        values.update({r["key"]: r["value"] for r in all("SELECT key, value FROM settings")})
+        g.settings = values
+    return g.settings
+
+
+def set_setting(key: str, value: str) -> None:
+    run(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        key,
+        value,
+    )
+    g.pop("settings", None)

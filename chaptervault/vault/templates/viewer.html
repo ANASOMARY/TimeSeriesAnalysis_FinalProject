@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='viewer.css', v=app_version) }}">{% endblock %}
+{% block body_class %}viewer{% endblock %}
+{% block body %}
+<header class="vbar">
+  <a class="vbtn" id="exit" href="{{ config.exitUrl }}">← <span class="vhide">{{ 'Back' if config.isAuthor else 'Library' }}</span></a>
+  <h1 class="vtitle">{{ doc.title }}</h1>
+  <div class="vtools">
+    <button type="button" class="vbtn" id="zoom-out" aria-label="Zoom out">−</button>
+    <span id="zoom-label" class="vzoom" aria-live="polite">100%</span>
+    <button type="button" class="vbtn" id="zoom-in" aria-label="Zoom in">+</button>
+    <label class="vpage"><span class="sr">Go to page</span><input id="page-input" type="number" min="1" max="{{ doc.page_count }}" value="1" inputmode="numeric"><span>of {{ doc.page_count }}</span></label>
+    <button type="button" class="vbtn" id="notes-toggle" aria-expanded="false" aria-controls="notes">{{ 'Feedback' if config.isAuthor else 'My notes' }} <span id="notes-count" class="vcount" hidden></span></button>
+  </div>
+</header>
+<div class="vmain">
+  <div id="stage" tabindex="0" aria-label="Chapter pages"><div id="pages"></div></div>
+  <aside id="notes" hidden aria-label="Feedback notes">
+    <div class="notes-head"><h2>{{ 'Reviewer feedback' if config.isAuthor else 'Your notes for the author' }}</h2><button type="button" class="vbtn" id="notes-close" aria-label="Close notes">×</button></div>
+    {% if config.canComment %}
+    <form id="note-form">
+      <label for="note-body">Note on page <strong id="note-page">1</strong></label>
+      <textarea id="note-body" maxlength="5000" rows="4" placeholder="What works, what does not, what confused you…" required></textarea>
+      <button class="vbtn solid">Add note</button>
+    </form>
+    {% elif not config.isAuthor %}
+    <p class="notes-empty">The author has not enabled feedback notes for this chapter.</p>
+    {% endif %}
+    <div id="note-list"></div>
+  </aside>
+</div>
+<div id="curtain" hidden role="alertdialog" aria-labelledby="curtain-title">
+  <div class="curtain-card">
+    <h2 id="curtain-title">Reading paused</h2>
+    <p id="curtain-text">The page is hidden while this window is not in focus. Click anywhere to continue.</p>
+    <a id="curtain-exit" class="vbtn solid" href="{{ config.exitUrl }}" hidden>Leave the reader</a>
+  </div>
+</div>
+<div id="toast" hidden role="status"></div>
+<noscript><div class="noscript">The secure reader needs JavaScript to display pages.</div></noscript>
+<script type="application/json" id="viewer-config">{{ config|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='viewer.js', v=app_version) }}" defer></script>{% endblock %}
