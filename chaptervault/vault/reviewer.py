@@ -302,7 +302,7 @@ def client_event(view_id: int):
 
 def _comment_json(row, for_author: bool) -> dict:
     data = {"id": row["id"], "page": row["page"], "body": row["body"], "author": row["name"],
-            "created": row["created_at"], "mine": row["user_id"] == g.user["id"],
+            "created": row["created_at"], "edited": row["edited_at"], "mine": row["user_id"] == g.user["id"],
             "box": [row["x0"], row["y0"], row["x1"], row["y1"]] if row["x0"] is not None else None}
     if for_author:
         # The quoted passage goes to the author only. Sending it to reviewers would hand them the
@@ -383,6 +383,29 @@ def comments(view_id: int):
         rows = db.all("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id "
                       "WHERE c.document_id = ? AND c.user_id = ? ORDER BY c.page, c.id", doc["id"], g.user["id"])
     return jsonify([_comment_json(r, for_author=grant is None) for r in rows])
+
+
+@bp.post("/view/<int:view_id>/comments/<int:comment_id>/edit")
+@api
+def edit_comment(view_id: int, comment_id: int):
+    """Reword one of your own notes. The passage it is pinned to stays where it is."""
+    view, doc, grant, code, message = _view_state(view_id)
+    if code != "ok":
+        return _deny(view, doc, code, message)
+    if grant is None or not grant["allow_comments"]:
+        abort(403)
+    body = str((request.get_json(silent=True) or {}).get("body", "")).strip()
+    if not body or len(body) > MAX_COMMENT:
+        return jsonify(error="invalid", message=f"Write a note of up to {MAX_COMMENT} characters."), 400
+    existing = db.one("SELECT * FROM comments WHERE id = ? AND user_id = ? AND document_id = ?",
+                      comment_id, g.user["id"], doc["id"])
+    if existing is None:
+        abort(404)
+    if body != existing["body"]:
+        db.run("UPDATE comments SET body = ?, edited_at = ? WHERE id = ?", body, db.now_iso(), comment_id)
+        audit.log("comment_edited", document=doc, view_id=view_id, page=existing["page"])
+    row = db.one("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?", comment_id)
+    return jsonify(_comment_json(row, for_author=False))
 
 
 @bp.post("/view/<int:view_id>/comments/<int:comment_id>/delete")

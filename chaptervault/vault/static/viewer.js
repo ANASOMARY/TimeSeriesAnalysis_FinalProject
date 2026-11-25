@@ -497,7 +497,16 @@
       jump.textContent = 'Page ' + note.page + (note.box ? ' · passage' : '') + (cfg.isAuthor ? ' · ' + note.author : '');
       jump.addEventListener('click', function () { showMark(note); });
       meta.appendChild(jump);
-      if (note.mine) {
+      var body = document.createElement('div');
+      body.className = 'note-body';
+      body.textContent = note.body;
+      if (note.mine && cfg.canComment) {
+        var actions = document.createElement('span');
+        actions.className = 'note-actions';
+        var edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = 'Edit';
+        edit.addEventListener('click', function () { editNote(note, item, body); });
         var del = document.createElement('button');
         del.type = 'button';
         del.className = 'del';
@@ -511,11 +520,10 @@
             }
           });
         });
-        meta.appendChild(del);
+        actions.appendChild(edit);
+        actions.appendChild(del);
+        meta.appendChild(actions);
       }
-      var body = document.createElement('div');
-      body.className = 'note-body';
-      body.textContent = note.body;
       item.appendChild(meta);
       if (note.quote) {
         var quote = document.createElement('div');
@@ -524,10 +532,64 @@
         item.appendChild(quote);
       }
       item.appendChild(body);
+      if (note.edited) {
+        var edited = document.createElement('div');
+        edited.className = 'note-edited';
+        edited.textContent = 'Edited';
+        item.appendChild(edited);
+      }
       noteList.appendChild(item);
     });
     markNotes();
     drawNoteMarks();
+  }
+
+  // Swap a note's text for an editing box, in place. The passage it is pinned to does not move.
+  function editNote(note, item, body) {
+    if (item.querySelector('.note-edit')) return;
+    var form = document.createElement('form');
+    form.className = 'note-edit';
+    var field = document.createElement('textarea');
+    field.maxLength = 5000;
+    field.rows = Math.min(10, Math.max(3, Math.ceil(note.body.length / 38)));
+    field.value = note.body;
+    field.setAttribute('aria-label', 'Edit note on page ' + note.page);
+    var save = document.createElement('button');
+    save.className = 'vbtn solid';
+    save.textContent = 'Save';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'vbtn';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', renderNotes);
+    field.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') { event.stopPropagation(); renderNotes(); }
+    });
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var text = field.value.trim();
+      if (!text) { say('A note cannot be empty. Delete it instead.'); return; }
+      save.disabled = true;
+      post(cfg.commentsUrl + '/' + note.id + '/edit', { body: text }).then(function (response) {
+        return response.json().then(function (data) {
+          if (response.ok) {
+            notes = notes.map(function (other) { return other.id === note.id ? data : other; });
+            renderNotes();
+          } else if (response.status === 403 && data.error && data.error !== 'Forbidden') {
+            endAccess(data.message);
+          } else {
+            save.disabled = false;
+            say(data.message || 'The note could not be saved.');
+          }
+        });
+      }).catch(function () { save.disabled = false; say('The note could not be saved. Check your connection.'); });
+    });
+    form.appendChild(field);
+    form.appendChild(save);
+    form.appendChild(cancel);
+    item.replaceChild(form, body);
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
   }
 
   function toggleNotes(open) {

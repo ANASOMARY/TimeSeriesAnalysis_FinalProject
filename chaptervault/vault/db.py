@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at TEXT NOT NULL,
   -- Optional marked area the note is pinned to, as fractions of the page, and the text under it.
   x0 REAL, y0 REAL, x1 REAL, y1 REAL,
-  quote TEXT NOT NULL DEFAULT ''
+  quote TEXT NOT NULL DEFAULT '',
+  edited_at TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -185,7 +186,8 @@ def run(sql: str, *args) -> sqlite3.Cursor:
 
 # Columns added after the first release. Existing databases gain them on start-up.
 ADDED_COLUMNS = {
-    "comments": {"x0": "REAL", "y0": "REAL", "x1": "REAL", "y1": "REAL", "quote": "TEXT NOT NULL DEFAULT ''"},
+    "comments": {"x0": "REAL", "y0": "REAL", "x1": "REAL", "y1": "REAL", "quote": "TEXT NOT NULL DEFAULT ''",
+                 "edited_at": "TEXT"},
 }
 
 

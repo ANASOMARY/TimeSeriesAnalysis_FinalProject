@@ -55,7 +55,7 @@
           {% elif c.x0 is not none %}<span class="passage">A marked area of the page (no text under it)</span>{% endif %}
           <span class="quote">{{ c.body }}</span>
         </td>
-        <td class="nowrap">{{ c.created_at|dt }}</td>
+        <td class="nowrap">{{ c.created_at|dt }}{% if c.edited_at %}<span class="sub">edited {{ c.edited_at|dt }}</span>{% endif %}</td>
         <td class="r">
           <form method="post" action="{{ url_for('admin.chapter_preview', doc_id=doc.id) }}" class="inline">
             {{ csrf() }}<input type="hidden" name="page" value="{{ c.page }}"><input type="hidden" name="note" value="{{ c.id }}">

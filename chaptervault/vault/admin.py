@@ -321,10 +321,11 @@ def chapter_preview(doc_id: int):
 def chapter_feedback_csv(doc_id: int):
     doc = _doc_or_404(doc_id)
     rows = db.all(
-        "SELECT c.page, u.name, u.email, c.created_at, c.quote, c.body FROM comments c "
+        "SELECT c.page, u.name, u.email, c.created_at, c.quote, c.body, c.edited_at FROM comments c "
         "JOIN users u ON u.id = c.user_id WHERE c.document_id = ? ORDER BY c.page, c.y0, c.id", doc_id)
     return _csv(f"feedback-chapter-{doc['id']}.csv",
-                ["Page", "Reviewer", "Email", "Written (UTC)", "Passage", "Feedback"], [tuple(r) for r in rows])
+                ["Page", "Reviewer", "Email", "Written (UTC)", "Passage", "Feedback", "Last edited (UTC)"],
+                [tuple(r) for r in rows])
 
 
 # ---------------------------------------------------------------- reviewers

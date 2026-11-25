@@ -54,6 +54,10 @@ body.can-mark .leaf:has(.mark.hover) { cursor: pointer; }
 .note-meta { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; font-size: 12px; color: #9eabb8; margin-bottom: 4px; }
 .note-meta button { background: none; border: 0; color: #7fd1c3; font: inherit; cursor: pointer; padding: 0; text-decoration: underline; }
 .note-meta button.del { color: #f0a59d; }
+.note-actions { display: flex; gap: 12px; flex: none; }
+.note-edit textarea { margin: 2px 0 8px; background: #0f171f; color: #fff; border-color: rgba(255, 255, 255, .2); font-size: 14px; -webkit-user-select: text; user-select: text; }
+.note-edit .vbtn { margin-right: 6px; }
+.note-edited { margin-top: 5px; font-size: 12px; color: #9eabb8; }
 .note-body { white-space: pre-wrap; overflow-wrap: anywhere; color: #e8ecf0; -webkit-user-select: text; user-select: text; }
 .notes-empty { color: #9eabb8; font-size: 14px; margin: 0; }
 

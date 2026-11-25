@@ -30,6 +30,7 @@ LABELS = {
     "capture_key": "Screen-capture key pressed",
     "copy_attempt": "Copy attempt blocked",
     "comment_added": "Feedback added",
+    "comment_edited": "Feedback edited",
     "comment_deleted": "Feedback deleted",
     "grant_created": "Access granted",
     "grant_updated": "Access rules changed",

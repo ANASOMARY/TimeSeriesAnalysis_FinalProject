@@ -575,7 +575,8 @@ def test_existing_database_gains_the_new_columns(tmp_path):
     upgraded = create_app(tmp_path / "data")
     rows = query(upgraded, "SELECT * FROM comments")
     assert rows == [{"id": 1, "document_id": 1, "user_id": 1, "page": 4, "body": "an old note",
-                     "created_at": "2026-01-01T00:00:00Z", "x0": None, "y0": None, "x1": None, "y1": None, "quote": ""}]
+                     "created_at": "2026-01-01T00:00:00Z", "x0": None, "y0": None, "x1": None, "y1": None, "quote": "",
+                     "edited_at": None}]
     create_app(tmp_path / "data")      # starting again changes nothing
 
 
@@ -634,3 +635,48 @@ def test_customised_notice_from_an_older_version_is_kept(app, author):
     with app.app_context():
         footer = db.settings()["watermark_footer"]
     assert footer == "Advance copy for the editorial board  ·  Issued to {email}  ·  {date}  ·  Ref {ref}"
+
+
+# ------------------------------------------------------------- editing a note
+
+def test_reviewer_can_edit_their_own_note(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    sam = add_reviewer(app, author, "Sam Skimmer", "sam@example.com", documents_=["1"])
+    rae_view, sam_view = open_chapter(rae), open_chapter(sam)
+    box = rae.get(f"{rae_view}/blocks/2").get_json()["blocks"][0]
+    note = rae.json(f"{rae_view}/comments", {"page": 2, "body": "Frist draft of my thought.", "box": box}).get_json()
+    assert note["edited"] is None
+
+    edited = rae.json(f"{rae_view}/comments/{note['id']}/edit", {"body": "  First draft of my thought, fixed.  "})
+    assert edited.status_code == 200
+    data = edited.get_json()
+    assert data["body"] == "First draft of my thought, fixed." and data["edited"] and "quote" not in data
+    assert data["box"] == box and data["page"] == 2                       # still pinned to the same passage
+    assert [c["body"] for c in rae.get(f"{rae_view}/comments").get_json()] == ["First draft of my thought, fixed."]
+
+    # refused: empty text, too long, someone else's note, a note that does not exist
+    assert rae.json(f"{rae_view}/comments/{note['id']}/edit", {"body": "   "}).status_code == 400
+    assert rae.json(f"{rae_view}/comments/{note['id']}/edit", {"body": "x" * 5001}).status_code == 400
+    assert sam.json(f"{sam_view}/comments/{note['id']}/edit", {"body": "hijacked"}).status_code == 404
+    assert rae.json(f"{rae_view}/comments/999/edit", {"body": "nothing there"}).status_code == 404
+    assert query(app, "SELECT body FROM comments")[0]["body"] == "First draft of my thought, fixed."
+
+    # the author sees the new wording, the passage it refers to, and that it was edited
+    page = author.get("/admin/chapters/1").get_data(as_text=True)
+    assert "First draft of my thought, fixed." in page and "Frist" not in page and "edited " in page
+    assert f"{SECRET_TEXT} - page 2" in page
+    assert "Feedback edited" in author.get("/admin/activity").get_data(as_text=True)
+
+    # saving unchanged text is not recorded as an edit
+    stamp = query(app, "SELECT edited_at FROM comments")[0]["edited_at"]
+    rae.json(f"{rae_view}/comments/{note['id']}/edit", {"body": "First draft of my thought, fixed."})
+    assert query(app, "SELECT COUNT(*) AS n FROM events WHERE kind = 'comment_edited'")[0]["n"] == 1
+    assert query(app, "SELECT edited_at FROM comments")[0]["edited_at"] == stamp
+
+    # once the author switches feedback off or revokes access, notes can no longer be changed
+    author.post("/admin/grants/1/update", {"action": "save"})             # feedback box unticked
+    assert rae.json(f"{rae_view}/comments/{note['id']}/edit", {"body": "too late"}).status_code == 403
+    author.post("/admin/grants/1/update", {"action": "revoke"})
+    assert rae.json(f"{rae_view}/comments/{note['id']}/edit", {"body": "too late"}).status_code == 403
+    assert query(app, "SELECT body FROM comments")[0]["body"] == "First draft of my thought, fixed."

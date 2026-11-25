@@ -21,7 +21,7 @@ again whenever you like. Reviewers read in their browser; the file itself never 
 | **Device locking** | An account works on a limited number of devices (2 by default) and only one session at a time, so a login cannot be passed around. |
 | **Printing and copying blocked** | Printing produces a blank page; text selection, right-click, save and copy are disabled; the page is hidden when the window loses focus. |
 | **Audit trail** | Sign-ins, every chapter opened, every page viewed, reading time, and each blocked print or copy attempt. Exportable as a spreadsheet. |
-| **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page). You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
+| **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page), and can edit or delete their own notes. You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
 | **Confidentiality terms** | Reviewers must accept your terms before they can open anything (editable, optional). |
 
 ## Run it on your computer
