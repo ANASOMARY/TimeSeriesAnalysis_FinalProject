@@ -5,13 +5,13 @@ import os
 from datetime import timezone
 
 from flask import Flask, g, render_template, request
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import Forbidden, HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import audit, auth, db, security
 from .config import Config
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; "
@@ -73,7 +73,8 @@ def create_app(data_dir: str | os.PathLike | None = None) -> Flask:
         titles = {400: "That request could not be processed", 401: "Please sign in",
                   403: "You do not have access to this", 404: "Page not found",
                   413: "That file is too large", 429: "Too many requests"}
-        message = exc.description if exc.code in (400,) else {
+        explained = exc.code == 400 or (exc.code == 403 and exc.description != Forbidden.description)
+        message = exc.description if explained else {
             401: "Your session has ended. Sign in again to continue.",
             404: "The page you asked for does not exist, or you no longer have access to it.",
             413: f"Uploads are limited to {cfg.max_upload_mb} MB.",

@@ -19,6 +19,25 @@
   </dl>
 </section>
 
+<section class="card" id="signals">
+  <h2>What else the reader noticed</h2>
+  <p class="muted">Counted while {{ person.name }} has had this chapter open{% if grant.seconds_read %} ({{ grant.seconds_read|duration }} in all){% endif %}.</p>
+  <dl class="facts">
+    <dt>Left the reader window</dt>
+    <dd>{{ signals.away }} time{{ '' if signals.away == 1 else 's' }}{% if signals.away %}, {{ signals.brief }} of them for under {{ signals.brief_seconds }} seconds{% endif %}
+      <span class="muted">switching to another window, tab or program</span></dd>
+    <dt>Screen-capture key</dt><dd>{{ signals.captures }} <span class="muted">Print Screen, or a Mac screenshot shortcut the browser was told about</span></dd>
+    <dt>Print attempts</dt><dd>{{ signals.prints }}</dd>
+    <dt>Copy or save attempts</dt><dd>{{ signals.copies }}</dd>
+    <dt>Automated browser</dt><dd>{{ signals.automation }} <span class="muted">the chapter was opened in a browser driven by a program, and closed itself</span></dd>
+    <dt>Tool or AI agent refused</dt><dd>{{ signals.refused }} <span class="muted">for this reviewer's account, on any chapter</span></dd>
+    <dt>Reading pace</dt>
+    <dd>{% if signals.pace %}about {{ signals.pace }} words a minute <span class="muted">{{ signals.read_words }} words read on screen; the reader accepts up to {{ signals.limit }} a minute, and careful reading is usually under 300</span>
+      {% else %}<span class="muted">not enough reading yet to say</span>{% endif %}</dd>
+  </dl>
+  <p class="fine">These are counts, not findings. A reviewer who keeps notes in another window leaves the reader as often as one who captures pages with a snipping tool, and the two cannot be told apart from here. A capture program, a phone camera, or an AI assistant working inside an ordinary browser leaves no trace at all.</p>
+</section>
+
 <section class="card">
   <h2>Not covered yet</h2>
   {% if not skipped %}

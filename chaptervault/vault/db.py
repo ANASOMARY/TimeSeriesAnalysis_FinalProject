@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS grants (
   max_views INTEGER,
   views_used INTEGER NOT NULL DEFAULT 0,
   seconds_read INTEGER NOT NULL DEFAULT 0,
+  away_count INTEGER NOT NULL DEFAULT 0,
+  away_brief INTEGER NOT NULL DEFAULT 0,
   allow_comments INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
   created_at TEXT NOT NULL,
@@ -234,7 +236,8 @@ def run(sql: str, *args) -> sqlite3.Cursor:
 ADDED_COLUMNS = {
     "users": {"invite_sent_at": "TEXT"},
     "documents": {"paras_json": "TEXT"},
-    "grants": {"reviewed_at": "TEXT"},
+    "grants": {"reviewed_at": "TEXT", "away_count": "INTEGER NOT NULL DEFAULT 0",
+               "away_brief": "INTEGER NOT NULL DEFAULT 0"},
     "comments": {"x0": "REAL", "y0": "REAL", "x1": "REAL", "y1": "REAL", "quote": "TEXT NOT NULL DEFAULT ''",
                  "edited_at": "TEXT"},
 }
@@ -291,13 +294,23 @@ def init_app(app) -> None:
 
 # ---------------------------------------------------------------- settings
 
-DEFAULT_NDA = (
+_NDA_OPENING = (
     "The chapters you are about to read are unpublished, confidential drafts shared with you "
     "solely so that you can review them.\n\n"
     "By continuing you agree that you will not copy, photograph, screenshot, record, forward or "
     "otherwise share any part of this material, and that you will not discuss its contents with "
     "anyone other than the author without the author's written permission.\n\n"
-    "Every page you open is marked with your name and email address, and your access is logged."
+)
+# The terms as they read before reading activity was recorded. A vault still showing exactly
+# this wording has never had its terms edited, so it moves to the current wording by itself.
+_OLD_NDA = _NDA_OPENING + "Every page you open is marked with your name and email address, and your access is logged."
+DEFAULT_NDA = _NDA_OPENING + (
+    "You also agree to read the chapters yourself: you will not open them with automated tools, "
+    "and you will not give any part of them to an AI assistant or any other service to read, "
+    "summarise or review.\n\n"
+    "Every page you open is marked with your name and email address. Your activity in the reader "
+    "is recorded for the author: what you have read and when, attempts to print, copy or capture "
+    "a page, and how often the reading window is left."
 )
 
 DEFAULT_SETTINGS = {
@@ -333,6 +346,9 @@ def settings() -> dict[str, str]:
         values = dict(DEFAULT_SETTINGS)
         stored = {r["key"]: r["value"] for r in all("SELECT key, value FROM settings")}
         values.update(stored)
+        # Saved through the settings form, the old wording comes back with the browser's line endings.
+        if stored.get("nda_text", "").replace("\r", "").strip() == _OLD_NDA:
+            values["nda_text"] = DEFAULT_NDA
         # Before the footer became fully editable, only its opening notice was stored. Carry a
         # customised notice over into the new footer text.
         notice = stored.get("watermark_notice")

@@ -1613,3 +1613,177 @@ def test_progress_page_export_and_target_date(app, author):
 
     rae = add_reviewer(app, author, "Rae Reader", "rae@example.com")
     assert rae.get("/admin/progress").status_code == 404 and rae.get("/admin/progress.csv").status_code == 404
+
+
+# ------------------------------------------------------ automated tools and reading signals
+
+CHATGPT = ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; "
+           "+https://openai.com/bot")
+SCRIPT = "python-requests/2.32.3"
+REAL_BROWSER = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/141.0.0.0 Safari/537.36")
+
+
+def test_only_tools_that_say_what_they_are_are_recognised():
+    from vault import automation
+    people = [
+        REAL_BROWSER,
+        "Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:143.0) Gecko/20100101 Firefox/143.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
+        "Mozilla/5.0 (Linux; Android 13; CUBOT KINGKONG 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 OPR/125.0.0.0",
+        "Werkzeug/3.1.3",
+    ]
+    for agent in people:
+        assert automation.declared({"User-Agent": agent}) is None, agent
+    tools = {
+        CHATGPT: "ChatGPT",
+        "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +Claude-User@anthropic.com)": "Claude",
+        "Mozilla/5.0 (compatible; Perplexity-User/1.0; +https://perplexity.ai/perplexity-user)": "Perplexity",
+        "Mozilla/5.0 (compatible; GPTBot/1.2; +https://openai.com/gptbot)": "OpenAI crawler",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36": "a headless browser",
+        SCRIPT: "a Python script",
+        "curl/8.5.0": "curl",
+        "": "a tool that does not identify itself",
+    }
+    for agent, name in tools.items():
+        assert automation.declared({"User-Agent": agent}) == name, agent
+    signed = automation.declared({"User-Agent": REAL_BROWSER, "Signature-Agent": '"https://chatgpt.com"'})
+    assert signed == "a signed agent (https://chatgpt.com)"
+
+
+def test_declared_tools_and_ai_agents_are_refused_for_reviewers(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    assert rae.get(f"{view_url}/page/1").mimetype == "image/jpeg"
+
+    refused = rae.client.get("/library", headers={"User-Agent": CHATGPT})
+    assert refused.status_code == 403
+    assert "ordinary web browser" in refused.get_data(as_text=True) and "chapter one" not in refused.get_data(as_text=True)
+    assert rae.client.get(f"{view_url}/page/2", headers={"User-Agent": CHATGPT}).status_code == 403   # no page image
+    again = rae.client.post(f"{view_url}/ping", json={}, headers={"User-Agent": CHATGPT, "X-CSRF-Token": rae.token})
+    assert again.status_code == 403 and "AI agents are not allowed" in again.get_json()["message"]
+    logged = query(app, "SELECT detail, actor FROM events WHERE kind = 'automation_blocked'")
+    assert logged == [{"detail": "ChatGPT", "actor": "Rae Reader <rae@example.com>"}]      # once, not once per request
+
+    assert rae.client.get("/library", headers={"User-Agent": SCRIPT}).status_code == 403
+    assert rae.client.get("/library", headers={"User-Agent": ""}).status_code == 403
+    assert rae.client.get("/library", headers={"User-Agent": REAL_BROWSER, "Signature-Agent": '"https://chatgpt.com"'}).status_code == 403
+    assert [e["detail"] for e in query(app, "SELECT detail FROM events WHERE kind = 'automation_blocked' ORDER BY id")] == [
+        "ChatGPT", "a Python script", "a tool that does not identify itself", "a signed agent (https://chatgpt.com)"]
+
+    # the person, in their ordinary browser, carries on; so does the author, whatever they use
+    assert rae.client.get("/library", headers={"User-Agent": REAL_BROWSER}).status_code == 200
+    assert rae.get(f"{view_url}/page/2").mimetype == "image/jpeg"
+    assert author.client.get("/admin/chapters", headers={"User-Agent": "curl/8.5.0"}).status_code == 200
+    assert Browser(app).client.get("/login", headers={"User-Agent": "curl/8.5.0"}).status_code == 200
+
+    activity = author.get("/admin/activity").get_data(as_text=True)
+    assert "Automated tool or AI agent blocked" in activity and "ChatGPT" in activity
+    assert "Automated tool or AI agent blocked" in author.get("/admin/").get_data(as_text=True)   # an alert on the dashboard
+
+
+def test_a_script_cannot_sign_in_as_a_reviewer_or_use_up_their_devices(app, author):
+    add_reviewer(app, author, "Rae Reader", "rae@example.com", password="reviewer password 1")
+    devices = query(app, "SELECT COUNT(*) AS n FROM devices")[0]["n"]
+    script = Browser(app)
+    script.client.environ_base["HTTP_USER_AGENT"] = SCRIPT
+    response = script.login("rae@example.com", "reviewer password 1")
+    assert response.status_code == 403 and "ordinary web browser" in response.get_data(as_text=True)
+    assert query(app, "SELECT COUNT(*) AS n FROM devices")[0]["n"] == devices
+    assert query(app, "SELECT COUNT(*) AS n FROM sessions WHERE user_agent = ?", SCRIPT)[0]["n"] == 0
+    assert [e["detail"] for e in query(app, "SELECT detail FROM events WHERE kind = 'automation_blocked'")] == ["a Python script"]
+    # the author signing in from a script (a backup job, say) is their own business
+    robot = Browser(app)
+    robot.client.environ_base["HTTP_USER_AGENT"] = SCRIPT
+    assert robot.login(*AUTHOR).status_code == 302
+
+
+def test_reader_closes_the_chapter_when_it_finds_itself_in_a_driven_browser(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    assert rae.get(f"{view_url}/page/1").mimetype == "image/jpeg"
+    assert rae.json(f"{view_url}/event", {"kind": "automation", "detail": "webdriver", "page": 1}).status_code == 200
+    assert rae.get(f"{view_url}/page/2").status_code == 404                     # that reading session is over
+    event = query(app, "SELECT detail, subject, actor FROM events WHERE kind = 'automation'")
+    assert event == [{"detail": "webdriver", "subject": "chapter one", "actor": "Rae Reader <rae@example.com>"}]
+    assert "Automated browser detected, chapter closed" in author.get("/admin/activity").get_data(as_text=True)
+    assert rae.get("/library").status_code == 200 and open_chapter(rae)        # a person can open it again
+    assert rae.json(f"{view_url}/event", {"kind": "made_up"}).status_code in (400, 404)
+
+    # the author's own preview is never closed, whatever the author's browser is
+    preview = author.post("/admin/chapters/1/preview").headers["Location"]
+    author.json(f"{preview}/event", {"kind": "automation", "detail": "webdriver"})
+    assert author.get(f"{preview}/page/1").mimetype == "image/jpeg"
+
+
+def test_leaving_the_reader_window_is_counted_for_the_author(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    assert reader_config(rae, view_url)["briefAbsence"] == 15
+    rae.get(f"{view_url}/page/1")
+    rae.json(f"{view_url}/cover", {"page": 1, "paras": [0], "how": "seen"})
+
+    def counters():
+        return query(app, "SELECT away_count, away_brief FROM grants")[0]
+
+    assert rae.json(f"{view_url}/ping", {"page": 1}).status_code == 200 and counters() == {"away_count": 0, "away_brief": 0}
+    rae.json(f"{view_url}/ping", {"page": 1, "away": {"n": 3, "brief": 2}})
+    assert counters() == {"away_count": 3, "away_brief": 2}
+    rae.json(f"{view_url}/ping", {"page": 1, "away": {"n": 1, "brief": 5}})       # brief ones cannot outnumber all of them
+    assert counters() == {"away_count": 4, "away_brief": 3}
+    for nonsense in ({"n": "9"}, {"n": -4, "brief": -4}, {"n": True}, {"n": 100000}, {"brief": 3}, "often", [3, 2], None):
+        assert rae.json(f"{view_url}/ping", {"page": 1, "away": nonsense}).status_code == 200
+    assert counters() == {"away_count": 4, "away_brief": 3}
+
+    for kind in ("capture_key", "capture_key", "print_attempt"):
+        rae.json(f"{view_url}/event", {"kind": kind, "detail": "PrintScreen", "page": 1})
+    facts = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", author.get("/admin/grants/1/coverage").get_data(as_text=True)))
+    assert "Left the reader window 4 times, 3 of them for under 15 seconds" in facts
+    assert "Screen-capture key 2 " in facts and "Print attempts 1 " in facts and "Copy or save attempts 0 " in facts
+    assert "Automated browser 0 " in facts and "Tool or AI agent refused 0 " in facts
+    assert "not enough reading yet to say" in facts and "These are counts, not findings" in facts
+
+    # pace: words read on screen over the time the chapter has been open
+    with app.app_context():
+        db.run("UPDATE documents SET paras_json = '[[450], [450], [450], [450], [450]]'")
+        db.run("UPDATE grants SET seconds_read = 600")
+    facts = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", author.get("/admin/grants/1/coverage").get_data(as_text=True)))
+    assert "about 45 words a minute" in facts and "450 words read on screen" in facts and "up to 600 a minute" in facts
+
+    # the author's own preview is not anyone's reading
+    preview = author.post("/admin/chapters/1/preview").headers["Location"]
+    assert author.json(f"{preview}/ping", {"page": 1, "away": {"n": 5, "brief": 5}}).status_code == 200
+    assert counters() == {"away_count": 4, "away_brief": 3}
+
+
+def test_terms_say_what_is_recorded_and_untouched_terms_are_brought_up_to_date(tmp_path):
+    first = create_app(tmp_path / "data")
+    with first.app_context():
+        current = db.settings()["nda_text"]
+        assert "how often the reading window is left" in current and "AI assistant" in current
+        db.set_setting("nda_text", db._OLD_NDA)            # saved with the settings form before this version
+    with create_app(tmp_path / "data").app_context():
+        assert db.settings()["nda_text"] == db.DEFAULT_NDA
+        db.set_setting("nda_text", db._OLD_NDA.replace("\n", "\r\n"))   # as a browser's text box sends it
+    with create_app(tmp_path / "data").app_context():
+        assert db.settings()["nda_text"] == db.DEFAULT_NDA
+        db.set_setting("nda_text", "My own terms.")         # an author's own wording is never replaced
+    with create_app(tmp_path / "data").app_context():
+        assert db.settings()["nda_text"] == "My own terms."
+
+
+def test_existing_grants_gain_the_window_counters(tmp_path):
+    import sqlite3
+    first = create_app(tmp_path / "data")
+    conn = sqlite3.connect(first.config["VAULT"].db_path)
+    conn.execute("ALTER TABLE grants DROP COLUMN away_count")
+    conn.execute("ALTER TABLE grants DROP COLUMN away_brief")
+    conn.commit()
+    conn.close()
+    with create_app(tmp_path / "data").app_context():
+        assert {"away_count", "away_brief"} <= {r["name"] for r in db.all("PRAGMA table_info(grants)")}

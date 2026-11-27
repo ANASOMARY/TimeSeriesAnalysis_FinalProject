@@ -33,6 +33,8 @@ LABELS = {
     "print_attempt": "Print attempt blocked",
     "capture_key": "Screen-capture key pressed",
     "copy_attempt": "Copy attempt blocked",
+    "automation": "Automated browser detected, chapter closed",
+    "automation_blocked": "Automated tool or AI agent blocked",
     "chapter_reviewed": "Chapter marked as reviewed",
     "chapter_reopened": "Review mark removed",
     "comment_added": "Feedback added",
@@ -57,6 +59,7 @@ LABELS = {
 ALERTS = {
     "login_failed", "login_locked", "login_blocked_device", "view_denied",
     "throttled", "print_attempt", "capture_key", "copy_attempt", "email_failed",
+    "automation", "automation_blocked",
 }
 
 

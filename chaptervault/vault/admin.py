@@ -15,7 +15,7 @@ from flask import (Blueprint, Response, abort, current_app, g, redirect, render_
 from . import access, audit, coverage, db, documents, mailer, security
 from . import progress as reporting
 from .auth import create_invite, end_sessions, flash, invite_link
-from .reviewer import MAX_WATERMARK_LINES, categories_of, start_view
+from .reviewer import BRIEF_ABSENCE, MAX_WATERMARK_LINES, categories_of, start_view
 
 bp = Blueprint("admin", __name__)
 
@@ -620,7 +620,28 @@ def grant_coverage(grant_id: int):
         skipped.append(entry)
     how = Counter(v for page in standing["pages"] for v in page["covered"].values())
     return render_template("admin/coverage.html", grant=grant, doc=doc, person=person, standing=standing,
-                           skipped=skipped, how=how)
+                           skipped=skipped, how=how, signals=_signals(grant, doc, person, standing))
+
+
+def _signals(grant, doc, person, standing) -> dict:
+    """What else the reader noticed while this reviewer had this chapter open. These are counts,
+    shown as counts: none of them says why something happened."""
+    seen = Counter(row["kind"] for row in db.all(
+        "SELECT kind FROM events WHERE user_id = ? AND document_id = ? "
+        "AND kind IN ('capture_key', 'print_attempt', 'copy_attempt', 'automation')", person["id"], doc["id"]))
+    # A tool refused before it reached a chapter is recorded against the reviewer, not a chapter.
+    refused = db.scalar("SELECT COUNT(*) FROM events WHERE user_id = ? AND kind = 'automation_blocked'", person["id"])
+    words = coverage.words_by_page(doc)
+    read_words = sum(words[page["n"] - 1][index] for page in standing["pages"]
+                     for index, way in page["covered"].items()
+                     if way == "seen" and page["n"] <= len(words) and index < len(words[page["n"] - 1]))
+    minutes = grant["seconds_read"] / 60
+    # Too little reading gives a meaningless figure: time is only counted in 20-second steps.
+    pace = round(read_words / minutes) if grant["seconds_read"] >= 180 and read_words >= 300 else None
+    return {"away": grant["away_count"], "brief": grant["away_brief"], "brief_seconds": BRIEF_ABSENCE,
+            "captures": seen["capture_key"], "prints": seen["print_attempt"], "copies": seen["copy_attempt"],
+            "automation": seen["automation"], "refused": refused, "pace": pace, "read_words": read_words,
+            "seconds": grant["seconds_read"], "limit": coverage.MAX_WPM}
 
 
 @bp.post("/grants/create")
@@ -911,7 +932,7 @@ def settings():
             elif not host:
                 db.set_setting("smtp_password_enc", "")
             db.set_setting("watermark_text", "\n".join(watermark_lines))
-            db.set_setting("nda_text", form.get("nda_text", "").strip()[:8000])
+            db.set_setting("nda_text", form.get("nda_text", "").replace("\r", "").strip()[:8000])
             db.set_setting("require_nda", "1" if form.get("require_nda") == "1" else "0")
             audit.log("settings_updated")
             flash("Settings saved.")

@@ -21,6 +21,8 @@ again whenever you like. Reviewers read in their browser; the file itself never 
 | **Device locking** | An account works on a limited number of devices (2 by default) and only one session at a time, so a login cannot be passed around. |
 | **Printing and copying blocked** | Printing produces a blank page; text selection, right-click, save and copy are disabled; the page is hidden when the window loses focus. |
 | **Audit trail** | Sign-ins, every chapter opened, every page viewed, reading time, and each blocked print or copy attempt. Exportable as a spreadsheet. |
+| **Automated tools refused** | A script, a headless or program-driven browser, or an AI agent that announces itself cannot sign in as a reviewer or open a chapter, and each attempt is an alert in the activity log. |
+| **Reading signals** | For each reviewer and chapter: how often they left the reader window (and how often only briefly), Print Screen presses, print and copy attempts, and their reading pace. Shown as counts, not accusations. |
 | **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page), and can edit or delete their own notes. You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
 | **No paragraph skipped** | The reader tracks which paragraphs each reviewer has actually had in front of them, flags any they scrolled past, and only lets a chapter be marked as reviewed when none are left. You can see exactly what each reviewer has not covered. |
 | **Reviewer's own summary** | Each reviewer sees where they stand: share read, whether their pace reaches the target date, and a map of every page showing what is read, partly read or untouched. |
@@ -115,6 +117,39 @@ that it was read with care; a tick is an attestation.
 Reviewers see the result on their library page: the share of their pages read, a sentence on whether
 their pace reaches the target date and what pace would, their trajectory, and one cell per page
 (read, partly read, not read, with a dot where they left notes) that opens the chapter at that page.
+
+### Screen capture, automated tools and AI
+
+What a website can see of these is limited, and ChapterVault reports only what it can really see.
+
+**Blocked and logged.** A signed-in reviewer's request is refused when it comes from something that
+says it is a program: AI agents and crawlers that name themselves (ChatGPT, Claude, Perplexity and
+others, including agents that sign their requests), scripting libraries and download tools, and
+headless browsers. Inside the reader, a browser that carries the standard marks of being driven by
+software (the `webdriver` flag that Selenium, Playwright and Puppeteer set, among others) loads no
+pages, closes the chapter and ends that reading session on the server. Both are alerts in
+**Activity**. The author's own account is never restricted.
+
+**Counted, without judgement.** The page a reviewer's row links to ("paragraphs covered") also
+lists what else the reader noticed while they had the chapter open:
+
+- how many times they **left the reader window**, and how many of those were for under 15 seconds.
+  Opening a snipping tool does this; so does glancing at an email or keeping notes in another window;
+- **Print Screen** presses (the browser is usually told about these on Windows, rarely on a Mac),
+  and print, copy and save attempts;
+- their **reading pace**: words read on screen divided by the time the chapter has been open. A
+  figure near the 600-a-minute limit means the chapter was scrolled at the fastest pace the reader
+  accepts.
+
+**Not visible to any website.** A snipping tool or other capture program, a screen recorder, a
+phone photo, an AI assistant built into the browser or steering an ordinary browser, and a reviewer
+pasting screenshots into a chatbot. Pages reach the browser as images rather than text, which
+stops an assistant simply reading the page, but an image can be read too. Against these the
+protection is the watermark on every page, your confidentiality terms and the log.
+
+The default confidentiality terms tell reviewers that this activity is recorded and that chapters
+must not be given to automated tools or AI assistants. A vault that never edited its terms picks up
+the new wording by itself; if you wrote your own, add those two points under **Settings**.
 
 ### Note categories
 
@@ -282,6 +317,10 @@ traceability: every page a reviewer sees carries their own name, email address, 
 address across the text, the page is hidden when the window loses focus, and the log shows exactly
 which pages each person opened.
 
+For the same reason it cannot see a capture program being used, or an AI assistant reading over a
+reviewer's shoulder inside an ordinary browser. It refuses the tools that identify themselves and
+counts how often the reader window is left; see "Screen capture, automated tools and AI" above.
+
 Other limits worth knowing:
 
 - Reading requires an internet connection; there is no offline mode.
@@ -302,7 +341,7 @@ test is skipped if it is not installed.
 The suite drives the real HTTP routes: encryption at rest, grant isolation between reviewers,
 expiry, open limits, revocation of an open reader, device locking, single-session enforcement,
 lockout, CSRF, the author-only console, pinned notes, invitation email, note categories, the
-progress forecast and paragraph coverage.
+progress forecast, paragraph coverage, and the refusal of automated tools.
 
 ## Licence note
 

@@ -12,7 +12,7 @@ from flask import (Blueprint, abort, current_app, g, redirect, render_template, 
                    url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import audit, db, security
+from . import audit, automation, db, security
 
 bp = Blueprint("auth", __name__)
 
@@ -175,6 +175,7 @@ def _load_session() -> None:
                     db.run("UPDATE sessions SET last_seen = ? WHERE id = ?", db.iso(now), row["id"])
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         _check_csrf()
+    automation.guard()
 
 
 def _set_cookies(response):
@@ -209,6 +210,10 @@ def _complete_login(user):
     device_id = None
     new_device_token = None
     if user["role"] == "reviewer":
+        tool = automation.declared(request.headers)
+        if tool:   # before a device is registered, so a script cannot use up the reviewer's devices
+            automation.note(user, tool)
+            return None, automation.MESSAGE
         raw = request.cookies.get(DEVICE_COOKIE)
         device = None
         if raw:

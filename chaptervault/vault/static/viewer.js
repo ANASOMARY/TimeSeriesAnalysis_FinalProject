@@ -213,9 +213,29 @@
     return target && target.closest && target.closest('textarea, input');
   }
 
-  window.addEventListener('blur', hide);
-  window.addEventListener('focus', reveal);
-  document.addEventListener('visibilitychange', function () { if (document.hidden) hide(); else reveal(); });
+  // How often the reader window is left, and for how long, is counted for the author (not in the
+  // author's own preview). Only the counts leave the browser, with the next heartbeat.
+  var away = { n: 0, brief: 0 };
+  var leftAt = 0;
+
+  function left() {
+    hide();
+    if (!leftAt && !ended && !cfg.isAuthor) leftAt = Date.now();
+  }
+
+  function back() {
+    reveal();
+    if (!leftAt || document.hidden || !document.hasFocus()) return;
+    var seconds = (Date.now() - leftAt) / 1000;
+    leftAt = 0;
+    if (seconds < 1) return;                   // a flicker of focus, not a departure
+    away.n++;
+    if (seconds < cfg.briefAbsence) away.brief++;
+  }
+
+  window.addEventListener('blur', left);
+  window.addEventListener('focus', back);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) left(); else back(); });
   curtain.addEventListener('click', function () { window.focus(); reveal(); });
 
   document.addEventListener('contextmenu', function (event) { if (!editable(event.target)) event.preventDefault(); });
@@ -224,6 +244,18 @@
   document.addEventListener('copy', function (event) {
     if (!editable(event.target)) { event.preventDefault(); report('copy_attempt', 'copy'); }
   });
+
+  // Some systems tell the browser when the key goes down, some only when it comes up, some both:
+  // one press is recorded once.
+  var lastCapture = 0;
+
+  function captureKey(name) {
+    hide();
+    setTimeout(reveal, 2500);
+    if (Date.now() - lastCapture < 1500) return;
+    lastCapture = Date.now();
+    report('capture_key', name);
+  }
 
   document.addEventListener('keydown', function (event) {
     var key = (event.key || '').toLowerCase();
@@ -237,20 +269,14 @@
       report('copy_attempt', 'save shortcut');
       say('Saving is disabled for this review copy.');
     } else if (key === 'printscreen' || (event.metaKey && event.shiftKey && (key === '3' || key === '4' || key === '5' || key === 's'))) {
-      hide();
-      report('capture_key', event.key);
-      setTimeout(reveal, 2500);
+      captureKey(event.key);
     } else if (!editable(event.target) && !mod) {
       if (key === '+' || key === '=') setZoom(zoom + 0.25);
       else if (key === '-') setZoom(zoom - 0.25);
     }
   });
   document.addEventListener('keyup', function (event) {
-    if ((event.key || '').toLowerCase() === 'printscreen') {
-      hide();
-      report('capture_key', 'PrintScreen');
-      setTimeout(reveal, 2500);
-    }
+    if ((event.key || '').toLowerCase() === 'printscreen') captureKey('PrintScreen');
   });
   window.addEventListener('beforeprint', function () { hide(); report('print_attempt', 'print dialog'); });
   window.addEventListener('afterprint', reveal);
@@ -258,12 +284,14 @@
   // Heartbeat: records reading time and closes the reader within seconds if access is withdrawn.
   setInterval(function () {
     if (ended || document.hidden) return;
-    post(cfg.pingUrl, { page: current }).then(function (response) {
+    var sent = { n: away.n, brief: away.brief };
+    post(cfg.pingUrl, { page: current, away: sent }).then(function (response) {
       if (GONE.indexOf(response.status) !== -1) {
         response.json().catch(function () { return {}; }).then(function (info) {
           endAccess(info.message || 'Your access to this chapter has ended.');
         });
       } else {
+        if (response.ok) { away.n -= sent.n; away.brief -= sent.brief; }
         pump();
       }
     }).catch(function () {});
@@ -934,7 +962,29 @@
     .catch(function () {});
 
   // ----------------------------------------------------------------- start
+  // A browser that is being driven by a program says so in a few standard places. When it does,
+  // nothing is loaded and the author is told. This catches test software and the agents built on
+  // it; an assistant working inside an ordinary browser leaves no such mark and is not caught.
+  function automationMarks() {
+    var marks = [];
+    try {
+      if (navigator.webdriver) marks.push('webdriver');
+      if (/HeadlessChrome|PhantomJS/i.test(navigator.userAgent)) marks.push('headless browser');
+      if (window.callPhantom || window._phantom || window.__nightmare) marks.push('scripted browser');
+      if (window.domAutomation || window.domAutomationController) marks.push('automation controller');
+      if (Object.keys(document).some(function (key) { return /^\$?cdc_/.test(key); })) marks.push('chromedriver');
+    } catch (error) { /* a browser that will not answer is treated as an ordinary one */ }
+    return marks;
+  }
+
   layout();
+  var marks = cfg.isAuthor ? [] : automationMarks();
+  if (marks.length) {
+    report('automation', marks.join(', '));
+    endAccess('Chapters can only be opened by a person using an ordinary web browser. Automated tools ' +
+      'and AI agents are not allowed, and this attempt has been recorded for the author.');
+    return;
+  }
   leaves.forEach(function (leaf) { observer.observe(leaf.el); });
   stage.focus();
 })();

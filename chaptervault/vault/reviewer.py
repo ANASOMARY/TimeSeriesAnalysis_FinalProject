@@ -20,7 +20,8 @@ bp = Blueprint("reviewer", __name__)
 VIEW_IDLE = timedelta(minutes=45)
 VIEW_LIFETIME = timedelta(hours=8)
 PAGES_PER_MINUTE = 90
-CLIENT_EVENTS = {"print_attempt", "capture_key", "copy_attempt"}
+CLIENT_EVENTS = {"print_attempt", "capture_key", "copy_attempt", "automation"}
+BRIEF_ABSENCE = 15   # seconds: leaving the reader for less than this is counted separately
 MAX_COMMENT = 5000
 
 _page_lock = threading.Lock()
@@ -229,6 +230,7 @@ def viewer(view_id: int):
         "canComment": bool(grant is not None and grant["allow_comments"]),
         "categories": active_categories(),
         "isAuthor": grant is None,
+        "briefAbsence": BRIEF_ABSENCE,
     }
     return render_template("viewer.html", doc=doc, config=config, grant=grant)
 
@@ -298,6 +300,10 @@ def page(view_id: int, number: int):
     return response
 
 
+def _small_count(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= 60 else 0
+
+
 @bp.post("/view/<int:view_id>/ping")
 @api
 def ping(view_id: int):
@@ -310,6 +316,16 @@ def ping(view_id: int):
     elapsed = int((now - db.parse_iso(view["pinged_at"])).total_seconds())
     if grant is not None and 0 < elapsed <= 90:
         db.run("UPDATE grants SET seconds_read = seconds_read + ? WHERE id = ?", elapsed, grant["id"])
+    # How often the reader window was left since the last heartbeat. It is kept as a plain count:
+    # switching to another program to take notes and switching to one that captures the screen
+    # look the same from here.
+    away = (request.get_json(silent=True) or {}).get("away")
+    if grant is not None and isinstance(away, dict):
+        times = _small_count(away.get("n"))
+        brief = min(_small_count(away.get("brief")), times)
+        if times:
+            db.run("UPDATE grants SET away_count = away_count + ?, away_brief = away_brief + ? WHERE id = ?",
+                   times, brief, grant["id"])
     db.run("UPDATE views SET last_seen = ?, pinged_at = ? WHERE id = ?", db.iso(now), db.iso(now), view_id)
     return jsonify(ok=True)
 
@@ -357,6 +373,10 @@ def client_event(view_id: int):
     if db.scalar("SELECT COUNT(*) FROM events WHERE view_id = ? AND kind = ?", view_id, kind) < 25:
         audit.log(kind, document=doc, view_id=view_id, page=payload.get("page") if isinstance(payload.get("page"), int) else None,
                   detail=str(payload.get("detail", ""))[:80])
+    if kind == "automation" and g.user["role"] == "reviewer":
+        # The reader found itself inside a browser driven by a program. It closes itself; ending
+        # the reading session here as well stops the pages being served to whatever is driving it.
+        db.run("DELETE FROM views WHERE id = ?", view_id)
     return jsonify(ok=True)
 
 
