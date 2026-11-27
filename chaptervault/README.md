@@ -22,6 +22,7 @@ again whenever you like. Reviewers read in their browser; the file itself never 
 | **Printing and copying blocked** | Printing produces a blank page; text selection, right-click, save and copy are disabled; the page is hidden when the window loses focus. |
 | **Audit trail** | Sign-ins, every chapter opened, every page viewed, reading time, and each blocked print or copy attempt. Exportable as a spreadsheet. |
 | **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page), and can edit or delete their own notes. You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
+| **Note categories** | You define the kinds of note ("Sounds AI-written", "Hard to follow", …), each with a one-line explanation. Reviewers tap any that apply, with or without typed details. Feedback is counted and filterable by category. |
 | **Invitations by email** | Enter a mail account once and each reviewer is emailed their personal invitation as soon as you add them. Resend it, or email a password-reset link, from the reviewer's page. Without a mail account you copy the link and send it yourself. |
 | **Confidentiality terms** | Reviewers must accept your terms before they can open anything (editable, optional). |
 
@@ -59,6 +60,21 @@ exporting to PDF from Word first gives you exact control over what reviewers see
 3. **Access.** A grid of reviewers against chapters: tick to grant, untick to revoke. Open a chapter
    or a reviewer to fine-tune the dates and open limits of a single grant.
 4. **Activity.** See who read what, how far they got, and anything that looked like a copy attempt.
+
+### Note categories
+
+**Categories** holds the kinds of note reviewers can choose from. A vault starts with seven
+(*Sounds AI-written*, *Hard to follow*, *Awkward wording*, *Filler*, *Repetitive*, *Eyebrow text*,
+*Works well*); add, rename, recolour, reorder or remove them as you like.
+
+- In the reader, the categories appear as buttons above the note box. A reviewer can pick several,
+  pick one and save without typing, or type a note with no category at all.
+- The explanation of a category shows under the buttons when the reviewer points at it, moves to it
+  with the keyboard, or picks it, so it is visible on phones and tablets too.
+- A note's highlight on the page takes the colour of its first category.
+- Each chapter's feedback shows a count per category, filters by it, and exports it as a column.
+- Retiring a category hides it from reviewers but keeps it on notes already written. A category
+  that has been used is retired rather than deleted.
 
 If a reviewer changes computer or forgets their password, open their page and use
 *Reset devices*, *Email a password reset link* or *Create password reset link*.

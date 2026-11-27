@@ -198,6 +198,7 @@ def viewer(view_id: int):
         "exitUrl": _exit_url() if grant is not None else url_for("admin.chapter", doc_id=doc["id"]),
         "csrf": g.session["csrf"],
         "canComment": bool(grant is not None and grant["allow_comments"]),
+        "categories": active_categories(),
         "isAuthor": grant is None,
     }
     return render_template("viewer.html", doc=doc, config=config, grant=grant)
@@ -300,15 +301,59 @@ def client_event(view_id: int):
 
 # ----------------------------------------------------------------- feedback
 
-def _comment_json(row, for_author: bool) -> dict:
+MAX_CATEGORIES_PER_NOTE = 8
+
+
+def active_categories() -> list[dict]:
+    """The kinds of note reviewers can choose from, in the author's order."""
+    return [{"id": r["id"], "name": r["name"], "description": r["description"], "color": r["color"]}
+            for r in db.all("SELECT * FROM categories WHERE active = 1 ORDER BY position, id")]
+
+
+def categories_of(comment_ids: list[int]) -> dict[int, list[dict]]:
+    """The categories attached to each of the given notes (retired ones included)."""
+    found: dict[int, list[dict]] = {cid: [] for cid in comment_ids}
+    if comment_ids:
+        marks = ",".join("?" * len(comment_ids))
+        for r in db.all(
+                f"SELECT cc.comment_id, c.id, c.name, c.description, c.color FROM comment_categories cc "
+                f"JOIN categories c ON c.id = cc.category_id WHERE cc.comment_id IN ({marks}) "
+                f"ORDER BY c.position, c.id", *comment_ids):
+            found[r["comment_id"]].append({"id": r["id"], "name": r["name"], "description": r["description"],
+                                           "color": r["color"]})
+    return found
+
+
+def _comment_json(row, for_author: bool, categories: list[dict]) -> dict:
     data = {"id": row["id"], "page": row["page"], "body": row["body"], "author": row["name"],
             "created": row["created_at"], "edited": row["edited_at"], "mine": row["user_id"] == g.user["id"],
-            "box": [row["x0"], row["y0"], row["x1"], row["y1"]] if row["x0"] is not None else None}
+            "box": [row["x0"], row["y0"], row["x1"], row["y1"]] if row["x0"] is not None else None,
+            "categories": categories}
     if for_author:
         # The quoted passage goes to the author only. Sending it to reviewers would hand them the
         # manuscript's text one marked paragraph at a time.
         data["quote"] = row["quote"]
     return data
+
+
+def _one_comment(comment_id: int, for_author: bool = False) -> dict:
+    row = db.one("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?", comment_id)
+    return _comment_json(row, for_author, categories_of([comment_id])[comment_id])
+
+
+def _clean_categories(value, allowed: set[int]) -> list[int]:
+    """Validate the category ids sent with a note. Raises ValueError on anything unexpected."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_CATEGORIES_PER_NOTE:
+        raise ValueError
+    chosen: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int) or item not in allowed:
+            raise ValueError
+        if item not in chosen:
+            chosen.append(item)
+    return chosen
 
 
 def _clean_box(value) -> list[float] | None:
@@ -358,9 +403,16 @@ def comments(view_id: int):
             box = _clean_box(payload.get("box"))
         except ValueError:
             return jsonify(error="invalid", message="That selection could not be used. Select the passage again."), 400
-        if (not body or len(body) > MAX_COMMENT or isinstance(page_no, bool) or not isinstance(page_no, int)
+        try:
+            chosen = _clean_categories(payload.get("categories"), {c["id"] for c in active_categories()})
+        except ValueError:
+            return jsonify(error="invalid", message="One of those categories is no longer available. "
+                                                    "Reload the page and try again."), 400
+        if (len(body) > MAX_COMMENT or isinstance(page_no, bool) or not isinstance(page_no, int)
                 or not 1 <= page_no <= doc["page_count"]):
             return jsonify(error="invalid", message=f"Write a note of up to {MAX_COMMENT} characters."), 400
+        if not body and not chosen:
+            return jsonify(error="invalid", message="Pick a category or write a note."), 400
         quote = ""
         if box is not None:
             try:
@@ -373,16 +425,18 @@ def comments(view_id: int):
             "INSERT INTO comments (document_id, user_id, page, body, created_at, x0, y0, x1, y1, quote) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
             doc["id"], g.user["id"], page_no, body, db.now_iso(), x0, y0, x1, y1, quote).lastrowid
+        for category_id in chosen:
+            db.run("INSERT INTO comment_categories (comment_id, category_id) VALUES (?, ?)", comment_id, category_id)
         audit.log("comment_added", document=doc, view_id=view_id, page=page_no)
-        row = db.one("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?", comment_id)
-        return jsonify(_comment_json(row, for_author=False)), 201
+        return jsonify(_one_comment(comment_id)), 201
     if grant is None:  # the author sees everyone's notes while previewing
         rows = db.all("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id "
                       "WHERE c.document_id = ? ORDER BY c.page, c.id", doc["id"])
     else:
         rows = db.all("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id "
                       "WHERE c.document_id = ? AND c.user_id = ? ORDER BY c.page, c.id", doc["id"], g.user["id"])
-    return jsonify([_comment_json(r, for_author=grant is None) for r in rows])
+    attached = categories_of([r["id"] for r in rows])
+    return jsonify([_comment_json(r, grant is None, attached[r["id"]]) for r in rows])
 
 
 @bp.post("/view/<int:view_id>/comments/<int:comment_id>/edit")
@@ -394,18 +448,31 @@ def edit_comment(view_id: int, comment_id: int):
         return _deny(view, doc, code, message)
     if grant is None or not grant["allow_comments"]:
         abort(403)
-    body = str((request.get_json(silent=True) or {}).get("body", "")).strip()
-    if not body or len(body) > MAX_COMMENT:
-        return jsonify(error="invalid", message=f"Write a note of up to {MAX_COMMENT} characters."), 400
+    payload = request.get_json(silent=True) or {}
+    body = str(payload.get("body", "")).strip()
     existing = db.one("SELECT * FROM comments WHERE id = ? AND user_id = ? AND document_id = ?",
                       comment_id, g.user["id"], doc["id"])
     if existing is None:
         abort(404)
-    if body != existing["body"]:
+    current = [c["id"] for c in categories_of([comment_id])[comment_id]]
+    chosen = current
+    if "categories" in payload:
+        try:  # a retired category already on the note may stay; it cannot be newly added
+            chosen = _clean_categories(payload["categories"], {c["id"] for c in active_categories()} | set(current))
+        except ValueError:
+            return jsonify(error="invalid", message="One of those categories is no longer available. "
+                                                    "Reload the page and try again."), 400
+    if len(body) > MAX_COMMENT:
+        return jsonify(error="invalid", message=f"Write a note of up to {MAX_COMMENT} characters."), 400
+    if not body and not chosen:
+        return jsonify(error="invalid", message="Pick a category or write a note."), 400
+    if body != existing["body"] or set(chosen) != set(current):
         db.run("UPDATE comments SET body = ?, edited_at = ? WHERE id = ?", body, db.now_iso(), comment_id)
+        db.run("DELETE FROM comment_categories WHERE comment_id = ?", comment_id)
+        for category_id in chosen:
+            db.run("INSERT INTO comment_categories (comment_id, category_id) VALUES (?, ?)", comment_id, category_id)
         audit.log("comment_edited", document=doc, view_id=view_id, page=existing["page"])
-    row = db.one("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?", comment_id)
-    return jsonify(_comment_json(row, for_author=False))
+    return jsonify(_one_comment(comment_id))
 
 
 @bp.post("/view/<int:view_id>/comments/<int:comment_id>/delete")

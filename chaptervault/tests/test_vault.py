@@ -1032,3 +1032,173 @@ def test_real_delivery_over_an_encrypted_connection(tmp_path, monkeypatch, mode)
             send(security="ssl" if mode == "starttls" else "starttls")
     finally:
         controller.stop()
+
+
+# -------------------------------------------------------------- note categories
+
+import json as _json  # noqa: E402
+
+STARTERS = ["Sounds AI-written", "Hard to follow", "Awkward wording", "Filler", "Repetitive", "Eyebrow text", "Works well"]
+
+
+def reader_config(browser, view_url) -> dict:
+    html = browser.get(view_url).get_data(as_text=True)
+    return _json.loads(re.search(r'<script type="application/json" id="viewer-config">(.*?)</script>', html, re.S).group(1))
+
+
+def category_id(app, name) -> int:
+    return query(app, "SELECT id FROM categories WHERE name = ?", name)[0]["id"]
+
+
+def test_a_vault_starts_with_starter_categories_and_keeps_the_authors_changes(tmp_path):
+    app = create_app(tmp_path / "data")
+    rows = query(app, "SELECT name, description, active FROM categories ORDER BY position")
+    assert [r["name"] for r in rows] == STARTERS
+    assert all(r["active"] == 1 and len(r["description"]) > 20 for r in rows)
+
+    with app.app_context():                                    # the author removes every category ...
+        db.run("DELETE FROM categories")
+    again = create_app(tmp_path / "data")                      # ... and a restart does not bring them back
+    assert query(again, "SELECT COUNT(*) AS n FROM categories")[0]["n"] == 0
+
+
+def test_a_vault_from_before_categories_gains_them(tmp_path):
+    import sqlite3
+    first = create_app(tmp_path / "data")
+    conn = sqlite3.connect(first.config["VAULT"].db_path)
+    conn.executescript("DROP TABLE comment_categories; DROP TABLE categories; "
+                       "DELETE FROM settings WHERE key = 'categories_seeded';"
+                       "INSERT INTO comments (document_id, user_id, page, body, created_at) VALUES (1, 1, 2, 'old note', '2026-01-01T00:00:00Z');")
+    conn.commit()
+    conn.close()
+    upgraded = create_app(tmp_path / "data")
+    assert [r["name"] for r in query(upgraded, "SELECT name FROM categories ORDER BY position")] == STARTERS
+    assert query(upgraded, "SELECT body FROM comments")[0]["body"] == "old note"
+
+
+def test_author_manages_the_categories(app, author):
+    page = author.get("/admin/categories").get_data(as_text=True)
+    assert all(name in page for name in STARTERS) and "7 offered to reviewers" in page
+
+    added = author.post("/admin/categories/add", {"name": "  Needs   a source ", "description": "A claim with nothing to back it up.", "color": ""},
+                        follow_redirects=True).get_data(as_text=True)
+    assert "“Needs a source” was added" in added
+    new = query(app, "SELECT * FROM categories WHERE name = 'Needs a source'")[0]
+    assert new["color"] == "teal" and new["position"] == 7        # the one colour no starter uses; added last
+
+    assert "already a category called" in author.post("/admin/categories/add", {"name": "needs a SOURCE"}, follow_redirects=True).get_data(as_text=True)
+    assert "Give the category a short name." in author.post("/admin/categories/add", {"name": "   "}, follow_redirects=True).get_data(as_text=True)
+    assert query(app, "SELECT COUNT(*) AS n FROM categories")[0]["n"] == 8
+
+    cid = new["id"]
+    author.post(f"/admin/categories/{cid}/update", {"action": "save", "name": "Needs evidence", "description": "Says something without showing why.", "color": "rose"})
+    assert query(app, "SELECT name, description, color FROM categories WHERE id = ?", cid)[0] == {
+        "name": "Needs evidence", "description": "Says something without showing why.", "color": "rose"}
+    clash = author.post(f"/admin/categories/{cid}/update", {"action": "save", "name": "Filler", "color": "rose"}, follow_redirects=True)
+    assert "already a category called" in clash.get_data(as_text=True)
+
+    order = lambda: [r["name"] for r in query(app, "SELECT name FROM categories WHERE active = 1 ORDER BY position, id")]  # noqa: E731
+    author.post(f"/admin/categories/{cid}/update", {"action": "up"})
+    assert order()[-2:] == ["Needs evidence", "Works well"]
+    author.post(f"/admin/categories/{cid}/update", {"action": "down"})
+    author.post(f"/admin/categories/{cid}/update", {"action": "down"})                 # already last: stays put
+    assert order()[-2:] == ["Works well", "Needs evidence"]
+
+    author.post(f"/admin/categories/{cid}/update", {"action": "retire"})
+    assert "Needs evidence" not in order()
+    author.post(f"/admin/categories/{cid}/update", {"action": "restore"})
+    assert "Needs evidence" in order()
+    author.post(f"/admin/categories/{cid}/update", {"action": "delete"})               # never used: really deleted
+    assert not query(app, "SELECT 1 FROM categories WHERE id = ?", cid)
+    assert author.post("/admin/categories/9999/update", {"action": "save", "name": "x"}).status_code == 404
+    assert "Note categories changed" in author.get("/admin/activity").get_data(as_text=True)
+
+
+def test_reviewer_tags_notes_with_categories(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    ai, hard, filler = (category_id(app, n) for n in ("Sounds AI-written", "Hard to follow", "Filler"))
+
+    offered = reader_config(rae, view_url)["categories"]
+    assert [c["name"] for c in offered] == STARTERS
+    assert offered[0] == {"id": ai, "name": "Sounds AI-written", "color": "violet", "description": offered[0]["description"]}
+    assert offered[0]["description"].startswith("Reads as machine-generated")
+
+    box = rae.get(f"{view_url}/blocks/2").get_json()["blocks"][0]
+    quick = rae.json(f"{view_url}/comments", {"page": 2, "box": box, "categories": [ai]})        # one tap, no typing
+    assert quick.status_code == 201
+    assert quick.get_json()["body"] == "" and [c["name"] for c in quick.get_json()["categories"]] == ["Sounds AI-written"]
+
+    both = rae.json(f"{view_url}/comments", {"page": 3, "body": "Two ideas fighting in one sentence.",
+                                             "categories": [hard, ai, hard]})                   # several, with details
+    assert both.status_code == 201
+    assert [c["name"] for c in both.get_json()["categories"]] == ["Sounds AI-written", "Hard to follow"]   # author's order, no repeats
+
+    plain = rae.json(f"{view_url}/comments", {"page": 4, "body": "Just a thought."})             # details only still works
+    assert plain.status_code == 201 and plain.get_json()["categories"] == []
+
+    for bad in ({"page": 2}, {"page": 2, "body": "  ", "categories": []}, {"page": 2, "categories": [9999]},
+                {"page": 2, "categories": "all"}, {"page": 2, "categories": [True]}, {"page": 2, "categories": [ai] * 9}):
+        assert rae.json(f"{view_url}/comments", bad).status_code == 400, bad
+    assert len(rae.get(f"{view_url}/comments").get_json()) == 3
+
+    # editing: change the categories, add or remove the text
+    note = quick.get_json()["id"]
+    changed = rae.json(f"{view_url}/comments/{note}/edit", {"body": "Reads like a brochure.", "categories": [filler]}).get_json()
+    assert changed["body"] == "Reads like a brochure." and [c["name"] for c in changed["categories"]] == ["Filler"] and changed["edited"]
+    kept = rae.json(f"{view_url}/comments/{note}/edit", {"body": "Reads like a brochure, honestly."}).get_json()
+    assert [c["name"] for c in kept["categories"]] == ["Filler"]                                 # categories untouched when not sent
+    assert rae.json(f"{view_url}/comments/{note}/edit", {"body": "", "categories": [filler]}).status_code == 200
+    assert rae.json(f"{view_url}/comments/{note}/edit", {"body": "", "categories": []}).status_code == 400
+
+    # a retired category: gone from the choices, kept on notes that have it, and may stay through an edit
+    author.post(f"/admin/categories/{filler}/update", {"action": "retire"})
+    assert "Filler" not in [c["name"] for c in reader_config(rae, view_url)["categories"]]
+    assert rae.json(f"{view_url}/comments", {"page": 2, "categories": [filler]}).status_code == 400
+    listed = {c["id"]: c for c in rae.get(f"{view_url}/comments").get_json()}
+    assert [c["name"] for c in listed[note]["categories"]] == ["Filler"]
+    still = rae.json(f"{view_url}/comments/{note}/edit", {"body": "Padding.", "categories": [filler, hard]})
+    assert still.status_code == 200 and {c["name"] for c in still.get_json()["categories"]} == {"Filler", "Hard to follow"}
+
+    # deleting a category that is in use retires it instead, so the notes keep their label
+    page = author.post(f"/admin/categories/{hard}/update", {"action": "delete"}, follow_redirects=True).get_data(as_text=True)
+    assert "retired instead of deleted" in page
+    assert query(app, "SELECT active FROM categories WHERE id = ?", hard)[0]["active"] == 0
+    assert len(query(app, "SELECT * FROM comment_categories WHERE category_id = ?", hard)) == 2
+
+
+def test_author_sees_categories_in_the_feedback(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    ai, hard = category_id(app, "Sounds AI-written"), category_id(app, "Hard to follow")
+    rae.json(f"{view_url}/comments", {"page": 1, "categories": [ai]})
+    rae.json(f"{view_url}/comments", {"page": 2, "body": "Dense paragraph.", "categories": [ai, hard]})
+    rae.json(f"{view_url}/comments", {"page": 3, "body": "No category on this one."})
+
+    page = author.get("/admin/chapters/1").get_data(as_text=True)
+    assert re.search(r"All <b>3</b>", page) and re.search(r"Sounds AI-written <b>2</b>", page)
+    assert re.search(r"Hard to follow <b>1</b>", page) and re.search(r"No category <b>1</b>", page)
+    assert page.count('class="cat-label c-violet"') == 2 and page.count('class="cat-label c-blue"') == 1
+
+    only_hard = author.get(f"/admin/chapters/1?category={hard}").get_data(as_text=True)
+    assert "Dense paragraph." in only_hard and "No category on this one." not in only_hard
+    without = author.get("/admin/chapters/1?category=none").get_data(as_text=True)
+    assert "No category on this one." in without and "Dense paragraph." not in without
+    assert "Dense paragraph." in author.get("/admin/chapters/1?category=nonsense").get_data(as_text=True)   # ignored
+
+    rows = list(csv_rows(author.get("/admin/chapters/1/feedback.csv").get_data(as_text=True)))
+    assert rows[0][4] == "Category"
+    assert [r[4] for r in rows[1:]] == ["Sounds AI-written", "Sounds AI-written; Hard to follow", ""]
+
+    # the author's preview shows every reviewer's labels
+    preview = author.post("/admin/chapters/1/preview").headers["Location"]
+    seen = author.get(preview + "/comments").get_json()
+    assert [[c["name"] for c in n["categories"]] for n in seen] == [["Sounds AI-written"], ["Sounds AI-written", "Hard to follow"], []]
+
+
+def csv_rows(text):
+    import csv
+    import io
+    return csv.reader(io.StringIO(text.lstrip("﻿")))

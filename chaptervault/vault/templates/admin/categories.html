@@ -1,0 +1,68 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf with context %}
+{% set active = 'admin.categories' %}
+{% block title %}Note categories{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <h1>Note categories</h1>
+  <p>The kinds of note reviewers can choose from when they comment. They can pick one or more for a note, and still type details. Each explanation is shown to the reviewer when they point at or pick the category.</p>
+</div></div>
+
+<section class="card">
+  <h2>Add a category</h2>
+  <form method="post" action="{{ url_for('admin.category_add') }}">
+    {{ csrf() }}
+    <div class="fields">
+      <label>Name <input type="text" name="name" maxlength="40" required placeholder="For example: Needs a source"><small>Keep it to two or three words: it becomes a button.</small></label>
+      <label>Colour
+        <select name="color"><option value="">Automatic</option>{% for c in colors %}<option value="{{ c }}">{{ c|capitalize }}</option>{% endfor %}</select>
+      </label>
+      <label class="wide">Explanation for reviewers <input type="text" name="description" maxlength="240" placeholder="One sentence saying when to use it"></label>
+    </div>
+    <button class="btn primary">Add category</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Your categories</h2><span class="muted">{{ rows|selectattr('active')|list|length }} offered to reviewers</span></div>
+  {% if not rows %}
+  <div class="empty"><strong>No categories</strong>Reviewers write notes without choosing a kind. Add one above to start.</div>
+  {% endif %}
+  {% for c in rows %}
+  <details class="grant catrow">
+    <summary>
+      <span class="who"><span class="cat-label c-{{ c.color }}{% if not c.active %} retired{% endif %}">{{ c.name }}</span></span>
+      <span class="cell catdesc">{{ c.description or 'No explanation yet' }}</span>
+      <span class="cell num">{{ c.used }} note{{ '' if c.used == 1 else 's' }}</span>
+      <span class="chev">
+        {% if c.active %}
+        <form method="post" action="{{ url_for('admin.category_update', category_id=c.id) }}" class="inline">{{ csrf() }}
+          <button class="btn small" name="action" value="up" aria-label="Move {{ c.name }} up" title="Move up">↑</button>
+          <button class="btn small" name="action" value="down" aria-label="Move {{ c.name }} down" title="Move down">↓</button>
+        </form>
+        {% else %}<span class="badge plain">Retired</span>{% endif %}
+        <span>Edit ▾</span>
+      </span>
+    </summary>
+    <div class="edit">
+      <form method="post" action="{{ url_for('admin.category_update', category_id=c.id) }}">
+        {{ csrf() }}
+        <div class="fields">
+          <label>Name <input type="text" name="name" value="{{ c.name }}" maxlength="40" required></label>
+          <label>Colour
+            <select name="color">{% for color in colors %}<option value="{{ color }}"{% if color == c.color %} selected{% endif %}>{{ color|capitalize }}</option>{% endfor %}</select>
+          </label>
+          <label class="wide">Explanation for reviewers <input type="text" name="description" value="{{ c.description }}" maxlength="240"></label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" name="action" value="save">Save</button>
+          {% if c.active %}<button class="btn" name="action" value="retire" formnovalidate>Retire</button>
+          {% else %}<button class="btn" name="action" value="restore" formnovalidate>Offer to reviewers again</button>{% endif %}
+          <button class="btn danger" name="action" value="delete" formnovalidate>Delete</button>
+        </div>
+        <p class="fine">Retiring hides a category from reviewers but keeps it on notes already written. A category that has been used is retired instead of deleted.</p>
+      </form>
+    </div>
+  </details>
+  {% endfor %}
+</section>
+{% endblock %}

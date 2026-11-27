@@ -422,7 +422,9 @@
       if (!note.box || !leaf) return;
       var el = makeMark('pinned');
       el.setAttribute('data-id', String(note.id));
-      el.title = (cfg.isAuthor ? note.author + ': ' : '') + note.body;
+      var kinds = (note.categories || []).map(function (category) { return category.name; }).join(', ');
+      el.title = (cfg.isAuthor ? note.author + ': ' : '') + [kinds, note.body].filter(Boolean).join(' \u2014 ');
+      if (note.categories && note.categories.length) el.classList.add('cat', 'c-' + note.categories[0].color);
       place(el, note.box);
       el.addEventListener('click', function (event) { event.stopPropagation(); showNote(note.id); });
       leaf.marks.insertBefore(el, leaf.marks.firstChild);
@@ -459,6 +461,97 @@
       showNote(wanted.id);
     } else {
       goTo(Number(match[1]));
+    }
+  }
+
+  // ----------------------------------------------------------- categories
+  // The author defines the kinds of note. A reviewer taps any that apply; the line under the
+  // buttons explains whichever one is pointed at, focused or was picked last, so the meaning is
+  // visible on touch screens too, where there is no hover.
+  var categories = cfg.categories || [];
+
+  function makePicker(selectedIds, alreadyOnNote) {
+    var options = categories.slice();
+    (alreadyOnNote || []).forEach(function (category) {   // a retired category stays on a note that has it
+      if (!options.some(function (other) { return other.id === category.id; })) options.push(category);
+    });
+    var chosen = (selectedIds || []).filter(function (id) {
+      return options.some(function (other) { return other.id === id; });
+    });
+    var wrap = document.createElement('div');
+    wrap.className = 'catpick';
+    var picker = { el: wrap, get: function () { return chosen.slice(); }, reset: function () {} };
+    if (!options.length) { wrap.hidden = true; return picker; }
+
+    var caption = document.createElement('div');
+    caption.className = 'cat-caption';
+    caption.textContent = 'Kind of note (optional, pick any that apply)';
+    var row = document.createElement('div');
+    row.className = 'chips';
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', 'Kind of note');
+    var help = document.createElement('p');
+    help.className = 'cat-help';
+    help.setAttribute('aria-live', 'polite');
+
+    function describe(category) { return category.name + ': ' + (category.description || 'No explanation given.'); }
+    function resting() {
+      if (!chosen.length) return 'Point at or tap a category to see what it means.';
+      var last = chosen[chosen.length - 1];
+      return describe(options.filter(function (other) { return other.id === last; })[0]);
+    }
+    function explain(category) { help.textContent = category ? describe(category) : resting(); }
+
+    var buttons = options.map(function (category) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip c-' + category.color;
+      button.textContent = category.name;
+      button.setAttribute('aria-pressed', String(chosen.indexOf(category.id) !== -1));
+      button.addEventListener('click', function () {
+        var at = chosen.indexOf(category.id);
+        if (at === -1) chosen.push(category.id); else chosen.splice(at, 1);
+        button.setAttribute('aria-pressed', String(at === -1));
+        explain(at === -1 ? category : null);
+      });
+      button.addEventListener('mouseenter', function () { explain(category); });
+      button.addEventListener('focus', function () { explain(category); });
+      button.addEventListener('mouseleave', function () { explain(null); });
+      button.addEventListener('blur', function () { explain(null); });
+      row.appendChild(button);
+      return button;
+    });
+    picker.reset = function () {
+      chosen = [];
+      buttons.forEach(function (button) { button.setAttribute('aria-pressed', 'false'); });
+      explain(null);
+    };
+    explain(null);
+    wrap.appendChild(caption);
+    wrap.appendChild(row);
+    wrap.appendChild(help);
+    return picker;
+  }
+
+  function categoryLabels(list) {
+    var tags = document.createElement('div');
+    tags.className = 'note-tags';
+    list.forEach(function (category) {
+      var tag = document.createElement('span');
+      tag.className = 'cat-label c-' + category.color;
+      tag.textContent = category.name;
+      tag.title = category.description || '';
+      tags.appendChild(tag);
+    });
+    return tags;
+  }
+
+  var notePicker = null;
+  if (noteForm) {
+    notePicker = makePicker([]);
+    document.getElementById('note-cats').appendChild(notePicker.el);
+    if (categories.length) {
+      document.getElementById('note-body').placeholder = 'Add details (optional if you picked a category)\u2026';
     }
   }
 
@@ -500,6 +593,7 @@
       var body = document.createElement('div');
       body.className = 'note-body';
       body.textContent = note.body;
+      body.hidden = !note.body;
       if (note.mine && cfg.canComment) {
         var actions = document.createElement('span');
         actions.className = 'note-actions';
@@ -525,6 +619,7 @@
         meta.appendChild(actions);
       }
       item.appendChild(meta);
+      if (note.categories && note.categories.length) item.appendChild(categoryLabels(note.categories));
       if (note.quote) {
         var quote = document.createElement('div');
         quote.className = 'note-quote';
@@ -549,6 +644,7 @@
     if (item.querySelector('.note-edit')) return;
     var form = document.createElement('form');
     form.className = 'note-edit';
+    var picker = makePicker((note.categories || []).map(function (category) { return category.id; }), note.categories);
     var field = document.createElement('textarea');
     field.maxLength = 5000;
     field.rows = Math.min(10, Math.max(3, Math.ceil(note.body.length / 38)));
@@ -568,9 +664,10 @@
     form.addEventListener('submit', function (event) {
       event.preventDefault();
       var text = field.value.trim();
-      if (!text) { say('A note cannot be empty. Delete it instead.'); return; }
+      var kinds = picker.get();
+      if (!text && !kinds.length) { say('A note needs a category or some text. Delete it if you no longer want it.'); return; }
       save.disabled = true;
-      post(cfg.commentsUrl + '/' + note.id + '/edit', { body: text }).then(function (response) {
+      post(cfg.commentsUrl + '/' + note.id + '/edit', { body: text, categories: kinds }).then(function (response) {
         return response.json().then(function (data) {
           if (response.ok) {
             notes = notes.map(function (other) { return other.id === note.id ? data : other; });
@@ -584,9 +681,12 @@
         });
       }).catch(function () { save.disabled = false; say('The note could not be saved. Check your connection.'); });
     });
+    form.appendChild(picker.el);
     form.appendChild(field);
     form.appendChild(save);
     form.appendChild(cancel);
+    var shown = item.querySelector('.note-tags');   // the editor shows the categories itself
+    if (shown) shown.remove();
     item.replaceChild(form, body);
     field.focus();
     field.setSelectionRange(field.value.length, field.value.length);
@@ -606,13 +706,19 @@
       event.preventDefault();
       var field = document.getElementById('note-body');
       var text = field.value.trim();
-      if (!text) return;
+      var kinds = notePicker.get();
+      if (!text && !kinds.length) {
+        say(categories.length ? 'Pick a category or write a note.' : 'Write a note first.');
+        return;
+      }
       var note = selection ? { page: selection.page, body: text, box: selection.box } : { page: current, body: text };
+      note.categories = kinds;
       post(cfg.commentsUrl, note).then(function (response) {
         return response.json().then(function (data) {
           if (response.ok) {
             notes.push(data);
             field.value = '';
+            notePicker.reset();
             clearSelection();
             renderNotes();
           } else if (response.status === 403 && data.error) {

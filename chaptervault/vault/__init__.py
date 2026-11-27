@@ -11,7 +11,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from . import audit, auth, db, security
 from .config import Config
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; "

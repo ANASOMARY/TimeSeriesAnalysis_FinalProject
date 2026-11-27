@@ -175,6 +175,30 @@ progress::-webkit-progress-bar { background: #ebe6db; }
 progress::-webkit-progress-value { background: var(--accent); border-radius: 99px; }
 progress::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
 
+/* ---------- note categories ----------
+   One class per colour. --cat is dark enough for white text; --cat-soft tints a highlighted
+   passage; --cat-light is the same hue for dark backgrounds (the reader's side panel). */
+.c-violet { --cat: #7c3aed; --cat-soft: rgba(124, 58, 237, .20); --cat-light: #c4b5fd; }
+.c-blue   { --cat: #2563eb; --cat-soft: rgba(37, 99, 235, .18);  --cat-light: #93c5fd; }
+.c-teal   { --cat: #0f766e; --cat-soft: rgba(15, 118, 110, .20); --cat-light: #5eead4; }
+.c-green  { --cat: #15803d; --cat-soft: rgba(21, 128, 61, .20);  --cat-light: #86efac; }
+.c-amber  { --cat: #b45309; --cat-soft: rgba(217, 119, 6, .24);  --cat-light: #fcd34d; }
+.c-orange { --cat: #c2410c; --cat-soft: rgba(234, 88, 12, .20);  --cat-light: #fdba74; }
+.c-rose   { --cat: #be123c; --cat-soft: rgba(225, 29, 72, .18);  --cat-light: #fda4af; }
+.c-slate  { --cat: #475569; --cat-soft: rgba(71, 85, 105, .22);  --cat-light: #cbd5e1; }
+.cat-label { display: inline-block; background: var(--cat, #475569); color: #fff; border-radius: 999px; padding: 2px 10px; font: 600 12px/1.5 var(--sans); white-space: nowrap; }
+.cat-label.retired { opacity: .55; text-decoration: line-through; }
+.catline { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.catfilter { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 14px; }
+.catpill { display: inline-flex; align-items: center; gap: 6px; border: 1.5px solid var(--cat, #c9c1b2); color: var(--cat, var(--ink)); border-radius: 999px; padding: 3px 11px; font-size: 13px; font-weight: 600; text-decoration: none; background: var(--surface); }
+.catpill b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.catpill:hover { background: var(--sunken); color: var(--cat, var(--ink)); }
+.catpill.on { background: var(--cat, var(--ink)); border-color: var(--cat, var(--ink)); color: #fff; }
+.catrow > summary { grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) 80px auto; }
+.catrow .catdesc { color: var(--muted); }
+/* The list this page borrows styles every span in its first column as a muted sub-line. */
+.catrow .who .cat-label { display: inline-block; color: #fff; font-size: 12px; }
+
 /* ---------- link box ---------- */
 .linkbox { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .linkbox input { flex: 1 1 320px; margin: 0; font: 13px var(--mono); background: var(--sunken); }

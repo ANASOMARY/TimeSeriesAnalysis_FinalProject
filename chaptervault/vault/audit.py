@@ -47,6 +47,7 @@ LABELS = {
     "reviewer_deleted": "Reviewer deleted",
     "devices_reset": "Registered devices cleared",
     "settings_updated": "Settings updated",
+    "categories_changed": "Note categories changed",
 }
 
 # Events that deserve the author's attention in the activity feed.

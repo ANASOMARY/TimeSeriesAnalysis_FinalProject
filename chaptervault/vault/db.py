@@ -126,7 +126,38 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- Kinds of note a reviewer can choose from. A category that has been used is retired
+-- (active = 0) rather than deleted, so notes already written keep their label.
+CREATE TABLE IF NOT EXISTS categories (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  description TEXT NOT NULL DEFAULT '',
+  color TEXT NOT NULL DEFAULT 'slate',
+  position INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS comment_categories (
+  comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+  category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  PRIMARY KEY (comment_id, category_id)
+);
 """
+
+# Colours a category can have. Each is a class in app.css, dark enough for white text.
+CATEGORY_COLORS = ("violet", "blue", "teal", "green", "amber", "orange", "rose", "slate")
+
+STARTER_CATEGORIES = (
+    ("Sounds AI-written", "Reads as machine-generated: generic, formulaic or over-polished phrasing a human "
+                          "author would be unlikely to write.", "violet"),
+    ("Hard to follow", "The information is there, but it takes effort to get: long or tangled sentences, too many "
+                       "ideas at once, or an unclear order.", "blue"),
+    ("Awkward wording", "Clumsy or unnatural phrasing that makes you stumble, whatever the cause.", "orange"),
+    ("Filler", "Words without substance. It could be cut and nothing would be lost.", "slate"),
+    ("Repetitive", "Repeats a point or phrase already made.", "amber"),
+    ("Eyebrow text", "A short label sitting above a heading (a kicker) that adds nothing or reads as decoration.", "rose"),
+    ("Works well", "A passage worth keeping as it is.", "green"),
+)
 
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -201,10 +232,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
 
+def _seed_categories(conn: sqlite3.Connection) -> None:
+    """Give a vault its starter categories once. The author's later changes, including
+    removing every one of them, are never undone by a restart."""
+    if conn.execute("SELECT 1 FROM settings WHERE key = 'categories_seeded'").fetchone():
+        return
+    if not conn.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
+        for position, (name, description, color) in enumerate(STARTER_CATEGORIES):
+            conn.execute("INSERT INTO categories (name, description, color, position, created_at) VALUES (?,?,?,?,?)",
+                         (name, description, color, position, now_iso()))
+    conn.execute("INSERT INTO settings (key, value) VALUES ('categories_seeded', '1')")
+
+
 def init_app(app) -> None:
     conn = connect(app.config["VAULT"].db_path)
     conn.executescript(SCHEMA)
     _migrate(conn)
+    _seed_categories(conn)
     conn.close()
 
     @app.teardown_appcontext

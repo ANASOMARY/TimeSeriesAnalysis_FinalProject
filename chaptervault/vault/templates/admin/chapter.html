@@ -40,17 +40,27 @@
   {% endif %}
 </section>
 
-<section class="card">
+<section class="card" id="feedback">
   <div class="card-head"><h2>Feedback from reviewers</h2>
-    {% if feedback %}<a class="btn small" href="{{ url_for('admin.chapter_feedback_csv', doc_id=doc.id) }}">Download as spreadsheet</a>{% endif %}</div>
+    {% if feedback_total %}<a class="btn small" href="{{ url_for('admin.chapter_feedback_csv', doc_id=doc.id) }}">Download as spreadsheet</a>{% endif %}</div>
+  {% if tally or (unlabelled and unlabelled != feedback_total) %}
+  <nav class="catfilter" aria-label="Filter feedback by category">
+    <a class="catpill{% if not chosen_category %} on{% endif %}" href="{{ url_for('admin.chapter', doc_id=doc.id) }}#feedback">All <b>{{ feedback_total }}</b></a>
+    {% for t in tally %}
+    <a class="catpill c-{{ t.color }}{% if chosen_category == t.id|string %} on{% endif %}" href="{{ url_for('admin.chapter', doc_id=doc.id, category=t.id) }}#feedback" title="{{ t.description }}">{{ t.name }} <b>{{ t.count }}</b></a>
+    {% endfor %}
+    {% if unlabelled %}<a class="catpill{% if chosen_category == 'none' %} on{% endif %}" href="{{ url_for('admin.chapter', doc_id=doc.id, category='none') }}#feedback">No category <b>{{ unlabelled }}</b></a>{% endif %}
+  </nav>
+  {% endif %}
   {% if feedback %}
   <div class="table-wrap"><table>
     <thead><tr><th>Page</th><th>Reviewer</th><th>Passage and note</th><th>Written</th><th></th></tr></thead>
-    <tbody>{% for c in feedback %}
+    <tbody>{% for item in feedback %}{% set c = item.note %}
       <tr>
         <td class="num">{{ c.page }}</td>
         <td class="nowrap">{{ c.name }}</td>
         <td>
+          {% if item.categories %}<span class="catline">{% for cat in item.categories %}<span class="cat-label c-{{ cat.color }}" title="{{ cat.description }}">{{ cat.name }}</span>{% endfor %}</span>{% endif %}
           {% if c.quote %}<span class="passage">“{{ c.quote|truncate(360, true, '…') }}”</span>
           {% elif c.x0 is not none %}<span class="passage">A marked area of the page (no text under it)</span>{% endif %}
           <span class="quote">{{ c.body }}</span>
@@ -65,6 +75,7 @@
       </tr>
     {% endfor %}</tbody>
   </table></div>
+  {% elif feedback_total %}<div class="empty">No notes in this category.</div>
   {% else %}<div class="empty">No feedback yet. Reviewers can pin notes to a paragraph, a passage or a whole page while reading.</div>{% endif %}
 </section>
 

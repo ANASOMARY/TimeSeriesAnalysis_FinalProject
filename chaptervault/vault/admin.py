@@ -13,7 +13,7 @@ from flask import (Blueprint, Response, abort, current_app, g, redirect, render_
 
 from . import access, audit, db, documents, mailer, security
 from .auth import create_invite, end_sessions, flash, invite_link
-from .reviewer import MAX_WATERMARK_LINES, start_view
+from .reviewer import MAX_WATERMARK_LINES, categories_of, start_view
 
 bp = Blueprint("admin", __name__)
 
@@ -261,13 +261,30 @@ def chapter(doc_id: int):
     granted_ids = {row["user"]["id"] for row in grants}
     available = [u for u in db.all("SELECT * FROM users WHERE role = 'reviewer' ORDER BY name COLLATE NOCASE")
                  if u["id"] not in granted_ids]
-    feedback = db.all(
+    notes = db.all(
         "SELECT c.*, u.name, u.email FROM comments c JOIN users u ON u.id = c.user_id "
         "WHERE c.document_id = ? ORDER BY c.page, c.y0, c.id", doc_id)
+    labels = categories_of([n["id"] for n in notes])
+    # How often each category was used on this chapter, for the summary row above the list.
+    tally: dict[int, dict] = {}
+    for note in notes:
+        for category in labels[note["id"]]:
+            tally.setdefault(category["id"], {**category, "count": 0})["count"] += 1
+    unlabelled = sum(1 for n in notes if not labels[n["id"]])
+    chosen = request.args.get("category", "")
+    if chosen == "none":
+        shown = [n for n in notes if not labels[n["id"]]]
+    elif chosen.isdigit() and int(chosen) in tally:
+        shown = [n for n in notes if any(c["id"] == int(chosen) for c in labels[n["id"]])]
+    else:
+        chosen, shown = "", notes
+    feedback = [{"note": n, "categories": labels[n["id"]]} for n in shown]
     events = db.all("SELECT * FROM events WHERE document_id = ? AND kind != 'page_view' ORDER BY id DESC LIMIT 15",
                     doc_id)
     return render_template("admin/chapter.html", doc=doc, grants=grants, available=available,
-                           feedback=feedback, events=events, defaults=_default_rules())
+                           feedback=feedback, events=events, defaults=_default_rules(),
+                           feedback_total=len(notes), tally=list(tally.values()), unlabelled=unlabelled,
+                           chosen_category=chosen)
 
 
 @bp.post("/chapters/<int:doc_id>/update")
@@ -351,11 +368,13 @@ def chapter_preview(doc_id: int):
 def chapter_feedback_csv(doc_id: int):
     doc = _doc_or_404(doc_id)
     rows = db.all(
-        "SELECT c.page, u.name, u.email, c.created_at, c.quote, c.body, c.edited_at FROM comments c "
+        "SELECT c.id, c.page, u.name, u.email, c.created_at, c.quote, c.body, c.edited_at FROM comments c "
         "JOIN users u ON u.id = c.user_id WHERE c.document_id = ? ORDER BY c.page, c.y0, c.id", doc_id)
+    labels = categories_of([r["id"] for r in rows])
     return _csv(f"feedback-chapter-{doc['id']}.csv",
-                ["Page", "Reviewer", "Email", "Written (UTC)", "Passage", "Feedback", "Last edited (UTC)"],
-                [tuple(r) for r in rows])
+                ["Page", "Reviewer", "Email", "Written (UTC)", "Category", "Passage", "Feedback", "Last edited (UTC)"],
+                [(r["page"], r["name"], r["email"], r["created_at"], "; ".join(c["name"] for c in labels[r["id"]]),
+                  r["quote"], r["body"], r["edited_at"]) for r in rows])
 
 
 # ---------------------------------------------------------------- reviewers
@@ -619,6 +638,91 @@ def access_matrix():
             label, tone = access.badge(grant, doc, person)
             cells[(uid, did)] = {"active": grant["status"] == "active", "label": label, "tone": tone}
     return render_template("admin/access.html", people=people, docs=docs, cells=cells, defaults=_default_rules())
+
+
+# --------------------------------------------------------------- categories
+
+def _category_fields() -> tuple[str, str, str] | None:
+    """Name, explanation and colour from a category form, or None after flashing what is wrong."""
+    name = " ".join(request.form.get("name", "").split())[:40]
+    description = " ".join(request.form.get("description", "").split())[:240]
+    color = request.form.get("color", "")
+    if not name:
+        flash("Give the category a short name.", "bad")
+        return None
+    if color not in db.CATEGORY_COLORS:
+        # "Automatic": the colour used least so far, so new categories stay easy to tell apart.
+        used = [r["color"] for r in db.all("SELECT color FROM categories")]
+        color = min(db.CATEGORY_COLORS, key=lambda c: (used.count(c), db.CATEGORY_COLORS.index(c)))
+    return name, description, color
+
+
+@bp.get("/categories")
+def categories():
+    rows = db.all(
+        "SELECT c.*, (SELECT COUNT(*) FROM comment_categories cc WHERE cc.category_id = c.id) AS used "
+        "FROM categories c ORDER BY c.active DESC, c.position, c.id")
+    return render_template("admin/categories.html", rows=rows, colors=db.CATEGORY_COLORS)
+
+
+@bp.post("/categories/add")
+def category_add():
+    fields = _category_fields()
+    if fields is not None:
+        name, description, color = fields
+        if db.scalar("SELECT 1 FROM categories WHERE name = ?", name):
+            flash(f"There is already a category called “{name}”.", "bad")
+        else:
+            position = (db.scalar("SELECT MAX(position) FROM categories") or 0) + 1
+            db.run("INSERT INTO categories (name, description, color, position, created_at) VALUES (?,?,?,?,?)",
+                   name, description, color, position, db.now_iso())
+            audit.log("categories_changed", detail=f"added: {name}")
+            flash(f"“{name}” was added. Reviewers can choose it straight away.")
+    return redirect(url_for("admin.categories"))
+
+
+@bp.post("/categories/<int:category_id>/update")
+def category_update(category_id: int):
+    category = db.one("SELECT * FROM categories WHERE id = ?", category_id) or abort(404)
+    action = request.form.get("action", "save")
+    if action in ("up", "down"):
+        order = [r["id"] for r in db.all("SELECT id FROM categories WHERE active = 1 ORDER BY position, id")]
+        if category_id in order:
+            at = order.index(category_id)
+            to = at - 1 if action == "up" else at + 1
+            if 0 <= to < len(order):
+                order[at], order[to] = order[to], order[at]
+                for position, cid in enumerate(order):
+                    db.run("UPDATE categories SET position = ? WHERE id = ?", position, cid)
+    elif action == "retire":
+        db.run("UPDATE categories SET active = 0 WHERE id = ?", category_id)
+        audit.log("categories_changed", detail=f"retired: {category['name']}")
+        flash(f"“{category['name']}” is retired. Reviewers can no longer choose it; notes that have it keep it.", "warn")
+    elif action == "restore":
+        db.run("UPDATE categories SET active = 1 WHERE id = ?", category_id)
+        audit.log("categories_changed", detail=f"restored: {category['name']}")
+        flash(f"“{category['name']}” is available to reviewers again.")
+    elif action == "delete":
+        if db.scalar("SELECT COUNT(*) FROM comment_categories WHERE category_id = ?", category_id):
+            db.run("UPDATE categories SET active = 0 WHERE id = ?", category_id)
+            flash(f"“{category['name']}” is on notes already written, so it was retired instead of deleted. "
+                  "Those notes keep their label.", "warn")
+        else:
+            db.run("DELETE FROM categories WHERE id = ?", category_id)
+            flash(f"“{category['name']}” was deleted.")
+        audit.log("categories_changed", detail=f"removed: {category['name']}")
+    else:
+        fields = _category_fields()
+        if fields is not None:
+            name, description, color = fields
+            if db.scalar("SELECT 1 FROM categories WHERE name = ? AND id != ?", name, category_id):
+                flash(f"There is already a category called “{name}”.", "bad")
+            else:
+                db.run("UPDATE categories SET name = ?, description = ?, color = ? WHERE id = ?",
+                       name, description, color, category_id)
+                audit.log("categories_changed", detail=f"edited: {name}")
+                flash(f"“{name}” saved.")
+    return redirect(url_for("admin.categories"))
 
 
 # ----------------------------------------------------------------- activity
