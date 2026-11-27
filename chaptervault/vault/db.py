@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
 CREATE INDEX IF NOT EXISTS events_user_doc ON events (user_id, document_id, kind);
 CREATE INDEX IF NOT EXISTS events_view_page ON events (view_id, page);
+CREATE INDEX IF NOT EXISTS events_kind_ts ON events (kind, ts);
 CREATE TABLE IF NOT EXISTS comments (
   id INTEGER PRIMARY KEY,
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -244,11 +245,26 @@ def _seed_categories(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO settings (key, value) VALUES ('categories_seeded', '1')")
 
 
+def _carry_over_reading_progress(conn: sqlite3.Connection) -> None:
+    """Progress used to be counted from pages that were *loaded*; it is now counted from pages
+    that were actually on screen for a few seconds ("page_read"). So that nobody's progress
+    drops to zero on upgrade, pages loaded before the change are carried over once."""
+    if conn.execute("SELECT 1 FROM settings WHERE key = 'page_read_carried_over'").fetchone():
+        return
+    conn.execute(
+        "INSERT INTO events (ts, kind, user_id, document_id, page, actor, subject, detail) "
+        "SELECT MIN(ts), 'page_read', user_id, document_id, page, actor, subject, 'carried over from pages opened' "
+        "FROM events WHERE kind = 'page_view' AND user_id IS NOT NULL AND document_id IS NOT NULL AND page IS NOT NULL "
+        "GROUP BY user_id, document_id, page")
+    conn.execute("INSERT INTO settings (key, value) VALUES ('page_read_carried_over', '1')")
+
+
 def init_app(app) -> None:
     conn = connect(app.config["VAULT"].db_path)
     conn.executescript(SCHEMA)
     _migrate(conn)
     _seed_categories(conn)
+    _carry_over_reading_progress(conn)
     conn.close()
 
     @app.teardown_appcontext

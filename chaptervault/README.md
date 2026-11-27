@@ -22,6 +22,7 @@ again whenever you like. Reviewers read in their browser; the file itself never 
 | **Printing and copying blocked** | Printing produces a blank page; text selection, right-click, save and copy are disabled; the page is hidden when the window loses focus. |
 | **Audit trail** | Sign-ins, every chapter opened, every page viewed, reading time, and each blocked print or copy attempt. Exportable as a spreadsheet. |
 | **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page), and can edit or delete their own notes. You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
+| **Progress report** | A page that shows how far each reviewer has got, their pace, and whether they will finish by your target date, with a chart of progress against that target. Prints as a two-page report or exports as a spreadsheet. |
 | **Note categories** | You define the kinds of note ("Sounds AI-written", "Hard to follow", …), each with a one-line explanation. Reviewers tap any that apply, with or without typed details. Feedback is counted and filterable by category. |
 | **Invitations by email** | Enter a mail account once and each reviewer is emailed their personal invitation as soon as you add them. Resend it, or email a password-reset link, from the reviewer's page. Without a mail account you copy the link and send it yourself. |
 | **Confidentiality terms** | Reviewers must accept your terms before they can open anything (editable, optional). |
@@ -60,6 +61,32 @@ exporting to PDF from Word first gives you exact control over what reviewers see
 3. **Access.** A grid of reviewers against chapters: tick to grant, untick to revoke. Open a chapter
    or a reviewer to fine-tune the dates and open limits of a single grant.
 4. **Activity.** See who read what, how far they got, and anything that looked like a copy attempt.
+
+### Progress report
+
+**Progress** is built for the start of a weekly call. Set the target date at the top of the page.
+
+- **Headline figures:** the share of assigned pages read, pages read in the last seven days compared
+  with the seven before, how many reviewers are on course, and notes written.
+- **The chart** sets pages read so far against an even pace to the target, and shows where the
+  current pace leads. That forecast adds up each reviewer's own pace, so it bends as people finish
+  and levels off short of 100% if anyone is not reading.
+- **Reviewers,** those needing attention first: progress, the last seven days, pace against the pace
+  needed, projected finish date, a status, and a small trajectory. **Chapters,** least-read first.
+- **A warning** when a reviewer's access to an unfinished chapter ends before the target date.
+- **Print or save as PDF** gives a landscape report (summary and chart, then the tables).
+  **Download data** gives the reviewer table as a spreadsheet.
+
+How it is worked out:
+
+- A page counts as *read* once it has been on the reviewer's screen for five seconds with the window
+  in focus. Pages that were only loaded, or scrolled past, do not count.
+- *Pace* is pages a day over the last 14 days, or since the chapters were assigned if that is more
+  recent. Days without reading count, so going quiet lowers it.
+- *Projected finish* is today plus the pages left divided by that pace. The whole review's forecast
+  is the date its last reviewer finishes.
+- *On track* means the pace meets what is needed to finish by the target; *at risk*, at least 60% of
+  it; *behind*, less than that, including no recent reading.
 
 ### Note categories
 
@@ -246,7 +273,8 @@ test is skipped if it is not installed.
 
 The suite drives the real HTTP routes: encryption at rest, grant isolation between reviewers,
 expiry, open limits, revocation of an open reader, device locking, single-session enforcement,
-lockout, CSRF, the author-only console, pinned notes and invitation email.
+lockout, CSRF, the author-only console, pinned notes, invitation email, note categories and the
+progress forecast.
 
 ## Licence note
 

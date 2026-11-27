@@ -269,6 +269,42 @@
     }).catch(function () {});
   }, 20000);
 
+  // Reading progress. A page counts as read once at least half of it (or enough of it to fill
+  // half the window) has been on screen, with the window in focus, for a few seconds in total.
+  // Pages that were only preloaded, or scrolled past, do not count.
+  var READ_SECONDS = 5;
+  var onScreen = {};
+  var countedAsRead = {};
+  if (!cfg.isAuthor) {
+    setInterval(function () {
+      if (ended || document.hidden || !curtain.hidden) return;
+      var frame = stage.getBoundingClientRect();
+      var finished = [];
+      leaves.forEach(function (leaf) {
+        if (!leaf.have || countedAsRead[leaf.n]) return;
+        var box = leaf.el.getBoundingClientRect();
+        var visible = Math.min(box.bottom, frame.bottom) - Math.max(box.top, frame.top);
+        if (visible < 0.5 * box.height && visible < 0.5 * frame.height) return;
+        onScreen[leaf.n] = (onScreen[leaf.n] || 0) + 1;
+        if (onScreen[leaf.n] >= READ_SECONDS) {
+          countedAsRead[leaf.n] = true;
+          finished.push(leaf.n);
+        }
+      });
+      if (!finished.length) return;
+      post(cfg.readUrl, { pages: finished }).then(function (response) {
+        if (GONE.indexOf(response.status) !== -1) {
+          return response.json().catch(function () { return {}; }).then(function (info) {
+            endAccess(info.message || 'Your access to this chapter has ended.');
+          });
+        }
+        if (!response.ok) throw new Error('not recorded');
+      }).catch(function () {   // offline or a server hiccup: report these pages again on a later tick
+        finished.forEach(function (n) { countedAsRead[n] = false; onScreen[n] = READ_SECONDS - 1; });
+      });
+    }, 1000);
+  }
+
   // ------------------------------------------------- pinning notes to passages
   // The server sends paragraph outlines: rectangles only, never text. Clicking one, or dragging
   // a box anywhere on a page, selects the passage the next note will be pinned to.

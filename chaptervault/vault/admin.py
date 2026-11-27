@@ -12,6 +12,7 @@ from flask import (Blueprint, Response, abort, current_app, g, redirect, render_
                    url_for)
 
 from . import access, audit, db, documents, mailer, security
+from . import progress as reporting
 from .auth import create_invite, end_sessions, flash, invite_link
 from .reviewer import MAX_WATERMARK_LINES, categories_of, start_view
 
@@ -118,7 +119,7 @@ def _grant_rows(where: str, *args, order: str = "id") -> list[dict]:
         doc = db.one("SELECT * FROM documents WHERE id = ?", grant["document_id"])
         label, tone = access.badge(grant, doc, user)
         pages_read = db.scalar(
-            "SELECT COUNT(DISTINCT page) FROM events WHERE kind = 'page_view' AND user_id = ? AND document_id = ?",
+            "SELECT COUNT(DISTINCT page) FROM events WHERE kind = 'page_read' AND user_id = ? AND document_id = ?",
             user["id"], doc["id"])
         rows.append({
             "grant": grant, "user": user, "doc": doc, "label": label, "tone": tone,
@@ -190,9 +191,52 @@ def dashboard():
         "feedback": db.scalar("SELECT COUNT(*) FROM comments"),
         "alerts": db.scalar(f"SELECT COUNT(*) FROM events WHERE kind IN ({alert_kinds}) AND ts > ?", week_ago),
     }
-    events = db.all("SELECT * FROM events WHERE kind != 'page_view' ORDER BY id DESC LIMIT 14")
+    events = db.all("SELECT * FROM events WHERE kind NOT IN ('page_view', 'page_read') ORDER BY id DESC LIMIT 14")
     reading = _grant_rows("last_viewed_at IS NOT NULL", order="last_viewed_at DESC LIMIT 6")
     return render_template("admin/dashboard.html", stats=stats, events=events, reading=reading)
+
+
+# ----------------------------------------------------------------- progress
+
+@bp.get("/progress")
+def progress():
+    """The report shown at the start of each weekly call: progress, trajectory and forecast."""
+    snap = reporting.snapshot()
+    return render_template(
+        "admin/progress.html", p=snap, chart=reporting.trajectory_chart(snap) if snap["people"] else None,
+        summary=reporting.chart_summary(snap) if snap["people"] else "",
+        spark=lambda person: reporting.sparkline(person, snap), icon=reporting.status_icon,
+        short_date=reporting.short_date, pace_window=reporting.PACE_WINDOW_DAYS,
+        at_risk_share=int(reporting.AT_RISK_SHARE * 100))
+
+
+@bp.post("/progress/target")
+def progress_target():
+    raw = request.form.get("target", "").strip()
+    if raw:
+        try:
+            datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            flash("Enter the target date in the form YYYY-MM-DD.", "bad")
+            return redirect(url_for("admin.progress"))
+    db.set_setting("review_target_date", raw)
+    audit.log("settings_updated", detail=f"review target date: {raw or 'cleared'}")
+    flash("Target date saved." if raw else "Target date cleared.")
+    return redirect(url_for("admin.progress"))
+
+
+@bp.get("/progress.csv")
+def progress_csv():
+    snap = reporting.snapshot()
+    stamp = lambda moment: db.iso(moment) if moment else ""   # noqa: E731
+    return _csv(
+        f"review-progress-{snap['now']:%Y-%m-%d}.csv",
+        ["Reviewer", "Email", "Status", "Pages assigned", "Pages read", "Percent read", "Read in last 7 days",
+         "Read in the 7 days before", "Pace (pages a day)", "Pace needed (pages a day)", "Projected finish (UTC)",
+         "Chapters finished", "Chapters assigned", "Notes", "Notes in last 7 days", "Last read (UTC)"],
+        [(p.name, p.email, p.label, p.total, p.read, f"{p.percent:.1f}", p.read_7d, p.read_prev_7d, f"{p.pace:.2f}",
+          "" if p.needed is None else f"{p.needed:.2f}", stamp(p.projected), p.chapters_finished, p.chapters,
+          p.notes, p.notes_7d, stamp(p.last_read_at)) for p in snap["people"]])
 
 
 # ----------------------------------------------------------------- chapters
@@ -279,7 +323,7 @@ def chapter(doc_id: int):
     else:
         chosen, shown = "", notes
     feedback = [{"note": n, "categories": labels[n["id"]]} for n in shown]
-    events = db.all("SELECT * FROM events WHERE document_id = ? AND kind != 'page_view' ORDER BY id DESC LIMIT 15",
+    events = db.all("SELECT * FROM events WHERE document_id = ? AND kind NOT IN ('page_view', 'page_read') ORDER BY id DESC LIMIT 15",
                     doc_id)
     return render_template("admin/chapter.html", doc=doc, grants=grants, available=available,
                            feedback=feedback, events=events, defaults=_default_rules(),
@@ -453,7 +497,7 @@ def reviewer(user_id: int):
         "admin/reviewer.html", person=person, grants=grants, available=available, link=link, mailto=mailto,
         mail_ready=_mail() is not None,
         devices=db.all("SELECT * FROM devices WHERE user_id = ? ORDER BY last_seen DESC", user_id),
-        events=db.all("SELECT * FROM events WHERE user_id = ? AND kind != 'page_view' ORDER BY id DESC LIMIT 15",
+        events=db.all("SELECT * FROM events WHERE user_id = ? AND kind NOT IN ('page_view', 'page_read') ORDER BY id DESC LIMIT 15",
                       user_id),
         defaults=_default_rules())
 
@@ -729,7 +773,8 @@ def category_update(category_id: int):
 
 EVENT_GROUPS = {
     "alerts": sorted(audit.ALERTS),
-    "reading": ["doc_open", "page_view", "comment_added", "comment_deleted", "nda_accepted"],
+    "reading": ["doc_open", "page_view", "page_read", "comment_added", "comment_edited", "comment_deleted",
+                "nda_accepted"],
     "signin": ["login", "login_failed", "login_locked", "login_blocked_device", "logout", "invite_accepted",
                "password_changed"],
 }
@@ -743,7 +788,7 @@ def activity():
         where.append("kind IN (%s)" % ",".join("?" * len(EVENT_GROUPS[group])))
         args += EVENT_GROUPS[group]
     elif group != "everything":
-        where.append("kind != 'page_view'")
+        where.append("kind NOT IN ('page_view', 'page_read')")
     reviewer_id = request.args.get("reviewer", type=int)
     if reviewer_id:
         where.append("user_id = ?")

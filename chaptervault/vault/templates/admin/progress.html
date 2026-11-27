@@ -1,0 +1,150 @@
+{% extends "admin/layout.html" %}{% from "_macros.html" import csrf with context %}
+{% set active = 'admin.progress' %}
+{% block title %}Review progress{% endblock %}
+{% macro meter(percent, tone) %}<progress class="pv-meter pv-meter-{{ tone }}" value="{{ percent|round(1) }}" max="100">{{ percent|round|int }}%</progress>{% endmacro %}
+{% macro meter_tone(status) %}{{ {'at_risk': 'warning', 'behind': 'critical', 'overdue': 'critical', 'not_started': 'idle'}.get(status, 'accent') }}{% endmacro %}
+{% macro pace(value) %}{{ '%.1f'|format(value) if value < 10 else value|round|int }}{% endmacro %}
+{% block content %}
+{% set o = p.overall %}
+<div class="head pv-head"><div>
+  <h1>Review progress{% if site.book_title %}: {{ site.book_title }}{% endif %}</h1>
+  <p>As of {{ short_date(p.now, true) }}, {{ '%02d:%02d'|format(p.now.hour, p.now.minute) }} UTC{% if p.target %} ·
+    target {{ short_date(p.target, true) }}{% if p.days_left > 0 %} · {{ p.days_left|round(0, 'ceil')|int }} day{{ '' if p.days_left|round(0, 'ceil')|int == 1 else 's' }} left{% else %} · target date passed{% endif %}{% endif %}</p>
+</div>
+<div class="actions noprint">
+  <form method="post" action="{{ url_for('admin.progress_target') }}" class="pv-target">
+    {{ csrf() }}
+    <label for="pv-target-date">Target date</label>
+    <input type="date" id="pv-target-date" name="target" value="{{ p.target.isoformat() if p.target else '' }}">
+    <button class="btn">Save</button>
+  </form>
+  {% if p.people %}
+  <button type="button" class="btn primary" data-print>Print or save as PDF</button>
+  <a class="btn" href="{{ url_for('admin.progress_csv') }}">Download data</a>
+  {% endif %}
+</div></div>
+
+{% if not p.people %}
+<div class="card empty"><strong>Nothing to report yet</strong>Progress appears here once reviewers have been given chapters. See <a href="{{ url_for('admin.access_matrix') }}">Access</a>.</div>
+{% else %}
+{% if not p.target %}<div class="flash info noprint">Set a target date above to see whether each reviewer will finish in time.</div>{% endif %}
+
+<section class="pv-kpis" aria-label="Headline figures">
+  <div class="pv-tile pv-hero">
+    <span class="pv-hero-value">{{ o.percent|round|int }}%</span>
+    <span class="pv-tile-label">of assigned pages read</span>
+    <span class="pv-tile-sub">{{ '{:,}'.format(o.read) }} of {{ '{:,}'.format(o.total) }} pages across {{ p.people|length }} reviewer{{ '' if p.people|length == 1 else 's' }}</span>
+  </div>
+  <div class="pv-tile">
+    <span class="pv-tile-label">Read in the last 7 days</span>
+    <span class="pv-tile-value">{{ '{:,}'.format(o.read_7d) }} <small>page{{ '' if o.read_7d == 1 else 's' }}</small></span>
+    <span class="pv-tile-sub">{% set change = o.read_7d - o.read_prev_7d %}{% if change > 0 %}<span class="pv-up">▲ {{ change }} more</span>{% elif change < 0 %}▼ {{ -change }} fewer{% else %}The same{% endif %} than the 7 days before</span>
+  </div>
+  <div class="pv-tile">
+    <span class="pv-tile-label">{% if p.target %}On course to finish by {{ short_date(p.target) }}{% else %}Finished so far{% endif %}</span>
+    <span class="pv-tile-value">{{ p.on_course }} of {{ p.people|length }} <small>reviewer{{ '' if p.people|length == 1 else 's' }}</small></span>
+    <span class="pv-tile-sub">{{ icon(o.tone) }}{% if o.status == 'finished' %}Review complete{% else %}Review {{ o.label|lower }}{% endif %}{% if o.status != 'finished' %}{% if p.last and o.projected %} · last to finish: {{ p.last.name }}, {{ short_date(o.projected, true) }}{% elif p.not_started or p.not_reading %} · no finish date for {{ (p.not_started + p.not_reading)|length }}{% endif %}{% endif %}</span>
+  </div>
+  <div class="pv-tile">
+    <span class="pv-tile-label">Reviewers</span>
+    <span class="pv-tile-value">{{ p.people|length }}</span>
+    <span class="pv-tile-sub pv-counts">{% for key, label, tone, count in p.counts %}<span>{{ icon(tone) }}{{ count }} {{ label|lower }}</span>{% endfor %}</span>
+  </div>
+  <div class="pv-tile">
+    <span class="pv-tile-label">Notes written</span>
+    <span class="pv-tile-value">{{ '{:,}'.format(o.notes) }}</span>
+    <span class="pv-tile-sub">{{ o.notes_7d }} in the last 7 days</span>
+  </div>
+</section>
+
+{% if p.expiring %}
+<div class="flash warn"><strong>Access ends before the target date</strong> for {{ p.expiring|length }} unfinished chapter{{ '' if p.expiring|length == 1 else 's' }}:
+  {% for e in p.expiring[:6] %}<a href="{{ url_for('admin.reviewer', user_id=e.user_id) }}">{{ e.name }}</a>, “{{ e.title }}” ({{ short_date(e.ends) }}){{ '; ' if not loop.last else '' }}{% endfor %}{% if p.expiring|length > 6 %}; and {{ p.expiring|length - 6 }} more{% endif %}.
+  Extend it on the reviewer's page, or they will be locked out before they finish.</div>
+{% endif %}
+
+{% if chart %}
+<section class="card pv-card pv-keep">
+  <h2>Progress against the target</h2>
+  <p class="pv-caption">{{ summary }}</p>
+  <ul class="pv-legend" aria-label="Lines on the chart">
+    <li><svg viewBox="0 0 26 8" aria-hidden="true"><line class="pv-actual" x1="1" x2="25" y1="4" y2="4"/></svg>Pages read so far</li>
+    {% if chart.has_target %}<li><svg viewBox="0 0 26 8" aria-hidden="true"><line class="pv-needed" x1="1" x2="25" y1="4" y2="4"/></svg>Even pace to the target</li>{% endif %}
+    {% if chart.has_projection %}<li><svg viewBox="0 0 26 8" aria-hidden="true"><line class="pv-projected" x1="1" x2="25" y1="4" y2="4"/></svg>Where the current pace leads</li>{% endif %}
+  </ul>
+  <div class="pv-figure">
+    {{ chart.svg }}
+    <div class="pv-tooltip" id="pv-tooltip" hidden></div>
+  </div>
+  <details class="pv-numbers noprint">
+    <summary>Show the numbers behind the chart</summary>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Day</th><th class="r">Read so far</th>{% if chart.has_target %}<th class="r">Even pace</th>{% endif %}</tr></thead>
+      <tbody>{% for row in chart.rows %}
+        <tr><td>{{ short_date(row.date, true) }}</td><td class="r num">{{ '%.1f'|format(row.actual) }}%</td>{% if chart.has_target %}<td class="r num">{{ '%.1f'|format(row.even) }}%</td>{% endif %}</tr>
+      {% endfor %}</tbody>
+    </table></div>
+  </details>
+  <script type="application/json" id="pv-data">{{ chart.data|tojson }}</script>
+  {# Printed under the chart, so it stays on the first sheet and never takes a page of its own. #}
+  <p class="pv-printnote">Read: on the reviewer's screen for five seconds or more. Pace: pages a day over the last {{ pace_window }} days.{% if p.target %} On track: the pace meets what is needed to finish by the target; at risk: at least {{ at_risk_share }}% of it; behind: less.{% endif %}</p>
+</section>
+{% endif %}
+
+<section class="card pv-card pv-newpage">
+  <h2>Reviewers</h2>
+  <p class="pv-caption">Those who need attention first. The small chart sets each reviewer's progress (blue) against an even pace to the target (grey).</p>
+  <div class="table-wrap"><table class="pv-people">
+    <thead><tr><th>Reviewer</th><th>Progress</th><th class="r">Last 7 days</th><th class="r">Pace a day</th><th>Projected finish</th><th>Status</th><th>Trajectory</th></tr></thead>
+    <tbody>
+    {% for r in p.people %}
+    <tr>
+      <td><a class="title" href="{{ url_for('admin.reviewer', user_id=r.id) }}">{{ r.name }}</a>
+        <span class="sub">{{ r.chapters_finished }} of {{ r.chapters }} chapter{{ '' if r.chapters == 1 else 's' }} finished</span></td>
+      <td class="pv-progress">{{ meter(r.percent, meter_tone(r.status)|trim) }}
+        <span class="sub num"><b>{{ r.percent|round|int }}%</b> · {{ '{:,}'.format(r.read) }} of {{ '{:,}'.format(r.total) }} pages</span></td>
+      <td class="r num">{{ '+' if r.read_7d else '' }}{{ r.read_7d }} page{{ '' if r.read_7d == 1 else 's' }}
+        <span class="sub">{{ r.notes_7d }} note{{ '' if r.notes_7d == 1 else 's' }}</span></td>
+      <td class="r num">{{ pace(r.pace) }}
+        <span class="sub">{% if r.needed is not none and r.status != 'finished' %}{{ pace(r.needed) }} needed{% else %}&nbsp;{% endif %}</span></td>
+      <td>{% if r.status == 'finished' %}Done{% elif r.projected %}{{ short_date(r.projected, true) }}{% elif r.read %}No reading in the last {{ pace_window }} days{% else %}Not started{% endif %}
+        {% if r.projected and p.target_end and r.status != 'finished' %}<span class="sub">{% set late = ((r.projected - p.target_end).total_seconds() / 86400)|round(0, 'ceil')|int %}{% if late > 0 %}{{ late }} day{{ '' if late == 1 else 's' }} after the target{% else %}{{ -late }} day{{ '' if late == -1 else 's' }} to spare{% endif %}</span>{% endif %}</td>
+      <td class="nowrap">{{ icon(r.tone) }}{{ r.label }}</td>
+      <td>{{ spark(r) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<section class="card pv-card pv-keep">
+  <h2>Chapters</h2>
+  <p class="pv-caption">Least-read first. “Average read” is the share of each chapter read, averaged over the reviewers who have it.</p>
+  <div class="table-wrap"><table class="pv-chapters">
+    <thead><tr><th>Chapter</th><th class="r">Pages</th><th>Average read</th><th class="r">Finished by</th><th class="r">Notes</th></tr></thead>
+    <tbody>
+    {% for c in p.chapters %}
+    <tr>
+      <td><a class="title" href="{{ url_for('admin.chapter', doc_id=c.id) }}">{{ c.title }}</a></td>
+      <td class="r num">{{ c.pages }}</td>
+      <td class="pv-progress">{{ meter(c.percent, 'accent') }}<span class="sub num"><b>{{ c.percent|round|int }}%</b></span></td>
+      <td class="r num">{{ c.finished }} of {{ c.reviewers }}</td>
+      <td class="r num">{{ c.notes }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<section class="pv-method noprint">
+  <h2>How this is worked out</h2>
+  <ul>
+    <li><strong>Read</strong> means a page was on the reviewer's screen for at least five seconds with the window in focus. Pages that were only loaded or scrolled past do not count.</li>
+    <li><strong>Pace</strong> is pages a day over the last {{ pace_window }} days, or since the chapters were assigned if that is more recent. Days without reading count, so going quiet lowers it.</li>
+    <li><strong>Projected finish</strong> is today plus the pages left divided by that pace.{% if p.target %} <strong>Needed</strong> is the pages left divided by the days to the target.{% endif %}</li>
+    {% if p.target %}<li><strong>On track</strong>: the pace meets what is needed. <strong>At risk</strong>: at least {{ at_risk_share }}% of it. <strong>Behind</strong>: less than that, including no recent reading.</li>{% endif %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}{{ super() }}<script src="{{ url_for('static', filename='progress.js', v=app_version) }}" defer></script>{% endblock %}

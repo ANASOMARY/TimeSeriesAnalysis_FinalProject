@@ -1202,3 +1202,242 @@ def csv_rows(text):
     import csv
     import io
     return csv.reader(io.StringIO(text.lstrip("﻿")))
+
+
+# ------------------------------------------------------- reading progress report
+
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa: E402
+
+from vault import progress as reporting  # noqa: E402
+
+
+def test_a_page_counts_as_read_only_when_the_reader_reports_it(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    sam = add_reviewer(app, author, "Sam Skimmer", "sam@example.com", documents_=["1"])
+    view_url, sam_view = open_chapter(rae), open_chapter(sam)
+    assert reader_config(rae, view_url)["readUrl"] == f"{view_url}/read"
+
+    for page in (1, 2):                                   # pages loaded (and preloaded) by the reader ...
+        assert rae.get(f"{view_url}/page/{page}").status_code == 200
+    assert "0 of 5 pages read" in rae.get("/library").get_data(as_text=True)      # ... are not progress
+
+    assert rae.json(f"{view_url}/read", {"pages": [1]}).get_json() == {"ok": True, "recorded": 1}
+    assert "1 of 5 pages read" in rae.get("/library").get_data(as_text=True)
+    assert rae.json(f"{view_url}/read", {"pages": [1]}).get_json()["recorded"] == 0          # once only
+    assert rae.json(f"{view_url}/read", {"pages": [3]}).get_json()["recorded"] == 0          # never served to this session
+    assert rae.json(f"{view_url}/read", {"pages": [99, 0, "2", True, None]}).get_json()["recorded"] == 0
+    assert rae.json(f"{view_url}/read", {"pages": [2, 2]}).get_json()["recorded"] == 1
+    assert rae.json(f"{view_url}/read", {"pages": "all"}).status_code == 400
+    assert rae.json(f"{view_url}/read", {"pages": list(range(60))}).status_code == 400
+    assert sam.json(f"{view_url}/read", {"pages": [1]}).status_code == 404                  # someone else's session
+    assert "0 of 5 pages read" in sam.get("/library").get_data(as_text=True)
+    assert sam_view != view_url
+
+    preview = author.post("/admin/chapters/1/preview").headers["Location"]                  # the author's preview
+    author.get(f"{preview}/page/1")
+    assert author.json(f"{preview}/read", {"pages": [1]}).get_json()["recorded"] == 0
+    assert len(query(app, "SELECT * FROM events WHERE kind = 'page_read'")) == 2
+
+    author.post("/admin/grants/1/update", {"action": "revoke"})
+    assert rae.json(f"{view_url}/read", {"pages": [1]}).status_code == 403
+    listed = author.get("/admin/activity").get_data(as_text=True)                           # not in the everyday log ...
+    assert "Page read" not in listed
+    assert "Page read" in author.get("/admin/activity?show=reading").get_data(as_text=True)  # ... but in the reading view
+
+
+def test_progress_from_before_the_change_is_carried_over_once(tmp_path):
+    import sqlite3
+    first = create_app(tmp_path / "data")
+    conn = sqlite3.connect(first.config["VAULT"].db_path)
+    conn.execute("DELETE FROM settings WHERE key = 'page_read_carried_over'")
+    for view, page, ts in ((1, 1, "2026-11-01T10:00:00Z"), (2, 1, "2026-11-03T10:00:00Z"), (1, 2, "2026-11-01T10:05:00Z")):
+        conn.execute("INSERT INTO events (ts, kind, user_id, document_id, view_id, page, actor, subject) "
+                     "VALUES (?, 'page_view', 7, 3, ?, ?, 'Rae <rae@example.com>', 'Chapter')", (ts, view, page))
+    conn.commit()
+    conn.close()
+    upgraded = create_app(tmp_path / "data")
+    carried = query(upgraded, "SELECT ts, user_id, document_id, page FROM events WHERE kind = 'page_read' ORDER BY page")
+    assert carried == [{"ts": "2026-11-01T10:00:00Z", "user_id": 7, "document_id": 3, "page": 1},
+                       {"ts": "2026-11-01T10:05:00Z", "user_id": 7, "document_id": 3, "page": 2}]
+    create_app(tmp_path / "data")
+    assert len(query(upgraded, "SELECT 1 FROM events WHERE kind = 'page_read'")) == 2          # not copied twice
+
+
+def test_status_rules():
+    c = reporting.classify
+    assert c(100, 100, 0.0, None, 10) == "finished"
+    assert c(100, 100, 0.0, None, -3) == "finished"               # finished stays finished after the date
+    assert c(100, 40, 5.0, None, 0) == "overdue" and c(100, 40, 5.0, None, -2) == "overdue"
+    assert c(100, 0, 0.0, 10.0, 10) == "not_started"
+    assert c(100, 40, 3.0, None, None) == "in_progress"           # no target date set
+    assert c(100, 40, 6.0, 6.0, 10) == "on_track" and c(100, 40, 9.0, 6.0, 10) == "on_track"
+    assert c(100, 40, 3.6, 6.0, 10) == "at_risk"                  # exactly 60% of what is needed
+    assert c(100, 40, 3.5, 6.0, 10) == "behind" and c(100, 40, 0.0, 6.0, 10) == "behind"
+
+
+def test_names_are_listed_readably():
+    people = [reporting.Person(i, name, "") for i, name in enumerate(["Ann", "Bo", "Cy", "Di", "Ed"])]
+    assert reporting._names(people[:1]) == "Ann" and reporting._names(people[:2]) == "Ann and Bo"
+    assert reporting._names(people[:3]) == "Ann, Bo and Cy" and reporting._names(people) == "Ann, Bo, Cy and 2 more"
+
+
+def test_recent_pace_counts_quiet_days():
+    now = _dt(2026, 12, 1, 12, tzinfo=_tz.utc)
+    days = lambda n: now - _td(days=n)                                           # noqa: E731
+    assert reporting.recent_pace([days(1)] * 30, days(3), now) == pytest.approx(10.0)       # assigned 3 days ago
+    assert reporting.recent_pace([days(1)] * 28, days(60), now) == pytest.approx(2.0)       # averaged over 14 days
+    assert reporting.recent_pace([days(20)] * 50, days(60), now) == 0.0                     # a burst, then silence
+    assert reporting.recent_pace([now] * 5, now, now) == pytest.approx(5.0)                 # never divides by ~zero
+
+
+def stage_review(app, author, target_in_days=5):
+    """Two 5-page chapters, four reviewers assigned ten days ago, each with a known reading history."""
+    upload(author)
+    upload(author, name="chapter-two.pdf")
+    for name in ("Ada Done", "Ben Steady", "Cy Slow", "Di Absent"):
+        author.post("/admin/reviewers/add", {"name": name, "email": f"{name.split()[0].lower()}@example.com", "documents": ["1", "2"]})
+    with app.app_context():
+        now = db.utcnow()
+        db.run("UPDATE grants SET created_at = ?, expires_at = NULL", db.iso(now - _td(days=10)))
+        history = {
+            2: [(doc, page, 9 - page) for doc in (1, 2) for page in range(1, 6)],          # Ada: everything
+            3: [(1, page, 10 - 2 * page) for page in range(1, 6)] + [(2, 1, 0.5)],         # Ben: 6 pages, steadily
+            4: [(1, 1, 9), (1, 2, 9)],                                                      # Cy: 2 pages, long ago
+        }                                                                                    # Di: nothing
+        for user_id, reads in history.items():
+            for doc, page, days_ago in reads:
+                db.run("INSERT INTO events (ts, kind, user_id, document_id, page) VALUES (?, 'page_read', ?, ?, ?)",
+                       db.iso(now - _td(days=days_ago)), user_id, doc, page)
+        db.run("INSERT INTO comments (document_id, user_id, page, body, created_at) VALUES (1, 3, 1, 'recent', ?)", db.iso(now - _td(days=2)))
+        db.run("INSERT INTO comments (document_id, user_id, page, body, created_at) VALUES (1, 3, 2, 'older', ?)", db.iso(now - _td(days=9)))
+        db.set_setting("review_target_date", (now + _td(days=target_in_days)).strftime("%Y-%m-%d"))
+        return now
+
+
+def test_progress_report_forecasts_each_reviewer(app, author):
+    now = stage_review(app, author)
+    with app.app_context():
+        snap = reporting.snapshot(now)
+        chart = reporting.trajectory_chart(snap)
+        summary = reporting.chart_summary(snap)
+        sparks = {p.name: str(reporting.sparkline(p, snap)) for p in snap["people"]}
+    people = {p.name: p for p in snap["people"]}
+    assert [p.name for p in snap["people"]] == ["Cy Slow", "Ben Steady", "Di Absent", "Ada Done"]     # worst first
+
+    ada, ben, cy, di = (people[n] for n in ("Ada Done", "Ben Steady", "Cy Slow", "Di Absent"))
+    assert (ada.status, ada.read, ada.total, ada.chapters_finished, ada.projected) == ("finished", 10, 10, 2, None)
+    assert (di.status, di.read, di.pace, di.projected) == ("not_started", 0, 0.0, None)
+
+    days_left = snap["days_left"]
+    assert 5 <= days_left < 6                                             # to the end of the target day
+    assert ben.read == 6 and ben.pace == pytest.approx(0.6) and ben.needed == pytest.approx(4 / days_left)
+    assert ben.status == "at_risk" and ben.projected == now + _td(days=4 / 0.6)        # 6.7 days: after the target
+    assert ben.projected > snap["target_end"]
+    assert (ben.read_7d, ben.read_prev_7d, ben.notes, ben.notes_7d) == (5, 1, 2, 1)     # read 8, 6, 4, 2, 0.5 and 0 days ago
+    assert cy.read == 2 and cy.pace == pytest.approx(0.2) and cy.status == "behind"
+    assert cy.projected == now + _td(days=8 / 0.2)
+
+    overall = snap["overall"]
+    assert (overall.total, overall.read, round(overall.percent)) == (40, 18, 45)
+    # The whole review follows its slowest reviewer: one is behind, and one has not started,
+    # so there is no finish date at all, however fast the others read.
+    assert overall.pace == pytest.approx(1.8) and overall.status == "behind" and overall.projected is None
+    assert snap["on_course"] == 1 and snap["last"].name == "Cy Slow"
+    assert [p.name for p in snap["not_started"]] == ["Di Absent"] and snap["not_reading"] == []
+    assert [(key, count) for key, _label, _tone, count in snap["counts"]] == [
+        ("behind", 1), ("at_risk", 1), ("not_started", 1), ("finished", 1)]
+    chapters = {c["title"]: c for c in snap["chapters"]}
+    assert chapters["chapter one"]["read"] == 12 and chapters["chapter one"]["percent"] == pytest.approx(60.0)
+    assert chapters["chapter two"]["read"] == 6 and chapters["chapter two"]["finished"] == 1
+    assert [c["title"] for c in snap["chapters"]] == ["chapter two", "chapter one"]                 # least read first
+    assert chapters["chapter one"]["notes"] == 2 and snap["expiring"] == []
+
+    # the cumulative series ends at today's total, never decreases, and the chart draws all three lines
+    assert ben.cumulative[-1] == 6 and ben.cumulative == sorted(ben.cumulative) and len(ben.days) == 11
+    assert overall.cumulative[-1] == 18
+    svg = str(chart["svg"])
+    for part in ('class="pv-actual"', 'class="pv-needed"', 'class="pv-projected"', "45% read", "Today", "Target", "Even pace"):
+        assert part in svg, part
+    assert chart["rows"][-1]["actual"] == pytest.approx(45.0) and 60 < chart["rows"][-1]["even"] < 70
+    assert chart["data"]["points"][-1]["actual"] == 45.0 and len(chart["data"]["points"]) == 11
+    assert summary == ("45% of assigned pages read. At the current pace the review levels off at 75% and never finishes: "
+                       "Di Absent has not started.")
+    with app.app_context():
+        curve = reporting.combined_projection(snap, now + _td(days=60))
+    assert [round(percent, 1) for _moment, percent in curve] == [45.0, 58.3, 75.0, 75.0]     # bends as Ben, then Cy, finish
+    assert curve[1][0] == now + _td(days=4 / 0.6) and curve[2][0] == now + _td(days=40)
+
+    # Once everyone is reading, the forecast is the date the last of them finishes.
+    with app.app_context():
+        db.run("DELETE FROM grants WHERE user_id = 5")                                          # Di is taken off the review
+        snap = reporting.snapshot(now)
+        summary = reporting.chart_summary(snap)
+        chart = reporting.trajectory_chart(snap)
+    assert snap["overall"].projected == now + _td(days=40) and snap["last"].name == "Cy Slow"
+    assert snap["overall"].status == "behind" and snap["on_course"] == 1 and len(snap["people"]) == 3
+    assert summary.startswith("60% of assigned pages read. At the current pace the last reviewer, Cy Slow, finishes on ")
+    assert summary.endswith("days after the target of " + reporting.short_date(snap["target"], True) + ".")
+    assert "At the current pace" in str(chart["svg"]) and chart["has_projection"]
+
+    # And when the slow one catches up, the review is on track.
+    with app.app_context():
+        for page in range(3, 6):
+            db.run("INSERT INTO events (ts, kind, user_id, document_id, page) VALUES (?, 'page_read', 4, 1, ?)", db.iso(now - _td(days=1)), page)
+        for page in range(1, 5):
+            db.run("INSERT INTO events (ts, kind, user_id, document_id, page) VALUES (?, 'page_read', 4, 2, ?)", db.iso(now - _td(days=1)), page)
+        snap = reporting.snapshot(now)
+        summary = reporting.chart_summary(snap)
+    cy = next(p for p in snap["people"] if p.name == "Cy Slow")
+    assert cy.read == 9 and cy.status == "on_track"
+    assert {p.status for p in snap["people"]} == {"finished", "at_risk", "on_track"} and snap["overall"].status == "at_risk"
+    assert snap["last"].name == "Ben Steady" and "the last reviewer, Ben Steady, finishes on" in summary
+    assert all("<svg" in s and "pv-actual" in s for s in sparks.values())
+    assert "an even pace would be at" in sparks["Ben Steady"]
+
+
+def test_progress_page_export_and_target_date(app, author):
+    empty = author.get("/admin/progress").get_data(as_text=True)
+    assert "Nothing to report yet" in empty and "Print or save as PDF" not in empty
+
+    stage_review(app, author)
+    page = author.get("/admin/progress").get_data(as_text=True)
+    for text in ("Review progress", "45%", "18 of 40 pages across 4 reviewers", "Ben Steady", "At risk", "Behind", "Not started",
+                 "Finished", "after the target", "Projected finish",
+                 "Print or save as PDF", "How this is worked out", 'id="pv-data"', "chapter two"):
+        assert text in page, text
+    table = page.split('class="pv-people"')[1]                 # names also appear in the "was added" banners above
+    assert table.index("Cy Slow") < table.index("Ben Steady") < table.index("Di Absent") < table.index("Ada Done")
+    assert "style=" not in page                                # the content-security policy allows no inline styles
+
+    rows = list(csv_rows(author.get("/admin/progress.csv").get_data(as_text=True)))
+    assert rows[0][:6] == ["Reviewer", "Email", "Status", "Pages assigned", "Pages read", "Percent read"]
+    by_name = {r[0]: r for r in rows[1:]}
+    assert by_name["Ben Steady"][2:9] == ["At risk", "10", "6", "60.0", "5", "1", "0.60"]
+    assert by_name["Ada Done"][2] == "Finished" and by_name["Di Absent"][10] == ""
+
+    # without a target date there is progress but no verdict
+    assert "Target date cleared." in author.post("/admin/progress/target", {"target": ""}, follow_redirects=True).get_data(as_text=True)
+    untargeted = author.get("/admin/progress").get_data(as_text=True)
+    assert "Set a target date above" in untargeted and "In progress" in untargeted
+    assert "At risk" not in untargeted and "Behind" not in untargeted and "needed" not in untargeted.split('class="pv-people"')[1]
+    assert "pv-needed" not in untargeted
+    assert "YYYY-MM-DD" in author.post("/admin/progress/target", {"target": "1 January"}, follow_redirects=True).get_data(as_text=True)
+
+    # a date already gone by: unfinished reviewers are overdue, finished ones stay finished
+    author.post("/admin/progress/target", {"target": "2020-01-01"})
+    past = author.get("/admin/progress").get_data(as_text=True)
+    assert "target date passed" in past and "Overdue" in past and "Finished" in past
+
+    # access that runs out before the target is called out
+    with app.app_context():
+        soon = db.utcnow() + _td(days=2)
+        db.set_setting("review_target_date", (db.utcnow() + _td(days=30)).strftime("%Y-%m-%d"))
+        db.run("UPDATE grants SET expires_at = ? WHERE user_id IN (2, 3)", db.iso(soon))
+    warned = author.get("/admin/progress").get_data(as_text=True)
+    # Ada has finished everything and Ben has finished chapter one, so only Ben's chapter two is at stake
+    assert "Access ends before the target date" in warned and "for 1 unfinished chapter:" in warned
+    assert "Ben Steady" in warned.split("Access ends before the target date")[1].split("</div>")[0]
+
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com")
+    assert rae.get("/admin/progress").status_code == 404 and rae.get("/admin/progress.csv").status_code == 404

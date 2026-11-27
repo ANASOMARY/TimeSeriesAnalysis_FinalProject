@@ -199,6 +199,136 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
 /* The list this page borrows styles every span in its first column as a muted sub-line. */
 .catrow .who .cat-label { display: inline-block; color: #fff; font-size: 12px; }
 
+/* ---------- review progress ----------
+   Chart colours follow a validated palette: one blue series, a grey reference line, and reserved
+   status colours that always travel with an icon and a label. Figures are set in the sans face. */
+.pv-target { display: flex; align-items: center; gap: 8px; }
+.pv-target label { font-size: 13px; color: var(--muted); font-weight: 500; }
+.pv-target input { width: auto; margin: 0; padding: 6px 8px; }
+.pv-kpis { display: grid; grid-template-columns: minmax(230px, 1.25fr) repeat(4, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.pv-tile { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; font-family: var(--sans); min-width: 0; }
+.pv-tile-label { font-size: 13px; color: var(--muted); }
+.pv-tile-value { font-size: 26px; font-weight: 600; line-height: 1.15; color: var(--ink); }
+.pv-tile-value small { font-size: 14px; font-weight: 500; color: var(--muted); }
+.pv-tile-sub { font-size: 13px; color: var(--muted); line-height: 1.4; }
+.pv-hero { justify-content: center; }
+.pv-hero-value { font-size: 56px; font-weight: 600; line-height: 1; color: var(--ink); letter-spacing: -.02em; }
+.pv-up { color: #006c10; font-weight: 600; }
+.pv-counts { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.pv-counts span { white-space: nowrap; }
+.pv-card h2 { margin-bottom: 4px; }
+.pv-caption { color: var(--muted); font-size: 14px; margin: 0 0 12px; max-width: 86ch; }
+.pv-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0 0 6px; padding: 0; font-size: 13px; color: var(--muted); }
+.pv-legend li { display: flex; align-items: center; gap: 7px; }
+.pv-legend svg { width: 26px; height: 8px; flex: none; }
+.pv-figure { position: relative; }
+.pv-chart { display: block; width: 100%; height: auto; font-family: var(--sans); overflow: visible; }
+.pv-grid { stroke: #e7e7e7; stroke-width: 1; }
+.pv-axis { stroke: #c2c2c2; stroke-width: 1; }
+.pv-tick { fill: #5c6672; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pv-marker { stroke: #c2c2c2; stroke-width: 1; }
+.pv-marker-label { fill: #5c6672; font-size: 12px; font-weight: 600; }
+.pv-needed { fill: none; stroke: #8a8a8a; stroke-width: 2; stroke-linecap: round; }
+.pv-actual { fill: none; stroke: #257de0; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.pv-projected { fill: none; stroke: #257de0; stroke-width: 2; stroke-linecap: round; stroke-dasharray: 1 6; }
+.pv-dot, .pv-hover-dot { fill: #257de0; stroke: #fff; stroke-width: 2; }
+.pv-label { fill: #5c6672; font-size: 12px; }
+.pv-value { fill: #1b2430; font-size: 13px; font-weight: 700; }
+.pv-crosshair { stroke: #8a8a8a; stroke-width: 1; }
+.pv-plate { fill: transparent; cursor: crosshair; }
+.pv-plate:focus { outline: none; }
+.pv-plate:focus-visible { stroke: var(--accent); stroke-width: 2; }
+.pv-tooltip { position: absolute; z-index: 2; background: #fff; border: 1px solid rgba(11, 11, 11, .12); border-radius: 8px; box-shadow: 0 4px 16px rgba(27, 36, 48, .14); padding: 8px 11px; font: 13px/1.5 var(--sans); pointer-events: none; white-space: nowrap; }
+.pv-tip-date { color: var(--muted); font-size: 12px; margin-bottom: 2px; }
+.pv-tip-row { display: flex; align-items: center; gap: 7px; }
+.pv-tip-row strong { font-variant-numeric: tabular-nums; }
+.pv-tip-row span:last-child { color: var(--muted); }
+.pv-key { width: 14px; height: 2px; border-radius: 2px; flex: none; }
+.pv-key-actual { background: #257de0; }
+.pv-key-needed { background: #8a8a8a; }
+.pv-numbers { margin-top: 10px; font-size: 14px; }
+.pv-numbers summary { cursor: pointer; color: var(--accent); }
+.pv-numbers .table-wrap { max-height: 300px; overflow: auto; margin-top: 8px; }
+.pv-spark { display: block; width: 168px; height: 44px; }
+.pv-spark .pv-needed { stroke-width: 1.5; }
+.pv-icon { width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; flex: none; }
+.pv-good, .pv-neutral { fill: #0aac23; }
+.pv-neutral { fill: #257de0; }
+.pv-warning { fill: #fbb315; }
+.pv-critical { fill: #dc3c3d; }
+.pv-done { stroke: #0aac23; }
+.pv-idle { stroke: #8a8a8a; }
+.pv-progress { min-width: 170px; }
+/* Meters: the fill carries the state; the track is a lighter step of the same colour. */
+progress.pv-meter { height: 8px; margin-bottom: 4px; background: #cce3fd; }
+progress.pv-meter::-webkit-progress-bar { background: #cce3fd; }
+progress.pv-meter::-webkit-progress-value { background: #257de0; }
+progress.pv-meter::-moz-progress-bar { background: #257de0; }
+progress.pv-meter-warning, progress.pv-meter-warning::-webkit-progress-bar { background: #fdf0cf; }
+progress.pv-meter-warning::-webkit-progress-value { background: #fbb315; }
+progress.pv-meter-warning::-moz-progress-bar { background: #fbb315; }
+progress.pv-meter-critical, progress.pv-meter-critical::-webkit-progress-bar { background: #f8d9d9; }
+progress.pv-meter-critical::-webkit-progress-value { background: #dc3c3d; }
+progress.pv-meter-critical::-moz-progress-bar { background: #dc3c3d; }
+progress.pv-meter-idle, progress.pv-meter-idle::-webkit-progress-bar { background: #e7e7e7; }
+.pv-people td, .pv-chapters td { vertical-align: middle; font-family: var(--sans); }
+/* Right-aligned figures need air before the left-aligned column that follows them. */
+.pv-people td.r, .pv-people th.r, .pv-chapters td.r, .pv-chapters th.r { padding-right: 26px; }
+.pv-people td.r:last-child, .pv-chapters td.r:last-child, .pv-chapters th.r:last-child { padding-right: 0; }
+.pv-people b, .pv-chapters b { color: var(--ink); }
+.pv-printnote { display: none; }
+.pv-method { color: var(--muted); font-size: 13px; padding: 0 4px; }
+.pv-method h2 { font: 600 14px var(--sans); color: var(--muted); margin-bottom: 6px; }
+.pv-method ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.pv-method strong { color: var(--ink); font-weight: 600; }
+@media (max-width: 1100px) { .pv-kpis { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); } .pv-hero { grid-column: 1 / -1; } }
+
+/* Printing an author page gives a clean report: no navigation, no buttons, colours kept. */
+@media print {
+  @page { size: A4 landscape; margin: 11mm; }
+  html, body { background: #fff !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .side, .noprint, .flash.ok { display: none !important; }
+  .shell { display: block; }
+  .main { padding: 0; max-width: none; }
+  /* The progress report is set smaller on paper so the headline figures and the chart share the
+     first sheet and the two tables the second. Real sizes are used rather than "zoom", which
+     Chromium does not account for when it decides where pages break. */
+  .card, .pv-tile { box-shadow: none; }
+  .pv-tile, .pv-kpis, .pv-keep, .flash { break-inside: avoid; }
+  .pv-newpage { break-before: page; }
+  .pv-head h1 { font-size: 22px; }
+  .pv-head p { font-size: 12px; margin-top: 3px; }
+  .pv-tile { padding: 9px 12px; gap: 2px; }
+  .pv-hero-value { font-size: 42px; }
+  .pv-tile-value { font-size: 20px; }
+  .pv-tile-value small { font-size: 12px; }
+  .pv-tile-label, .pv-tile-sub { font-size: 11.5px; }
+  .flash { font-size: 12px; padding: 7px 11px; margin-bottom: 10px; }
+  .pv-card h2 { font-size: 16px; }
+  .pv-caption { font-size: 12px; margin-bottom: 6px; }
+  .pv-legend { font-size: 11.5px; margin-bottom: 2px; }
+  .pv-figure { max-width: 740px; margin: 0 auto; }   /* keeps the chart on the first sheet, under the tiles */
+  .pv-people, .pv-chapters { font-size: 12px; }
+  .pv-people td, .pv-chapters td, .pv-people th, .pv-chapters th { padding-top: 4px; padding-bottom: 4px; }
+  .pv-people th, .pv-chapters th { font-size: 10.5px; }
+  .pv-people td .sub, .pv-chapters td .sub { font-size: 11px; }
+  .pv-chapters .pv-progress { display: flex; align-items: center; gap: 10px; }
+  .pv-chapters .pv-progress progress { margin: 0; flex: 1 1 auto; }
+  .pv-chapters .pv-progress .sub { flex: none; min-width: 34px; }
+  .pv-spark { width: 130px; height: 34px; }
+  .pv-progress { min-width: 150px; }
+  .pv-printnote { display: block; margin: 6px 0 0; font-size: 11px; color: var(--muted); }
+  .pv-kpis { grid-template-columns: 1.25fr repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .pv-hero { grid-column: auto; }
+  .pv-plate, .pv-tooltip, .pv-crosshair, .pv-hover-dot { display: none; }
+  .table-wrap { overflow: visible; margin: 0; padding: 0; }
+  tr { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+  .head { margin-bottom: 12px; }
+  .card { margin-bottom: 10px; padding: 12px 14px; }
+}
+
 /* ---------- link box ---------- */
 .linkbox { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .linkbox input { flex: 1 1 320px; margin: 0; font: 13px var(--mono); background: var(--sunken); }

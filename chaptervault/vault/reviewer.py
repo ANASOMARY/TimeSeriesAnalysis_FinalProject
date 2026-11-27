@@ -69,7 +69,7 @@ def library():
         doc = db.one("SELECT * FROM documents WHERE id = ?", row["doc_id"])
         code, message = access.can_open(grant, doc, g.user)
         pages_read = db.scalar(
-            "SELECT COUNT(DISTINCT page) FROM events WHERE kind = 'page_view' AND user_id = ? AND document_id = ?",
+            "SELECT COUNT(DISTINCT page) FROM events WHERE kind = 'page_read' AND user_id = ? AND document_id = ?",
             g.user["id"], doc["id"])
         expires = db.parse_iso(grant["expires_at"])
         items.append({
@@ -193,6 +193,7 @@ def viewer(view_id: int):
         "pageUrl": url_for("reviewer.page", view_id=view_id, number=0).rsplit("/", 1)[0] + "/",
         "pingUrl": url_for("reviewer.ping", view_id=view_id),
         "eventUrl": url_for("reviewer.client_event", view_id=view_id),
+        "readUrl": url_for("reviewer.mark_read", view_id=view_id),
         "commentsUrl": url_for("reviewer.comments", view_id=view_id),
         "blocksUrl": url_for("reviewer.blocks", view_id=view_id, number=0).rsplit("/", 1)[0] + "/",
         "exitUrl": _exit_url() if grant is not None else url_for("admin.chapter", doc_id=doc["id"]),
@@ -283,6 +284,35 @@ def ping(view_id: int):
         db.run("UPDATE grants SET seconds_read = seconds_read + ? WHERE id = ?", elapsed, grant["id"])
     db.run("UPDATE views SET last_seen = ?, pinged_at = ? WHERE id = ?", db.iso(now), db.iso(now), view_id)
     return jsonify(ok=True)
+
+
+@bp.post("/view/<int:view_id>/read")
+@api
+def mark_read(view_id: int):
+    """The reader reports pages that stayed on screen long enough to count as read.
+
+    This is what reading progress is measured from. A page is only accepted if this reading
+    session was actually served it, and each page counts once per reviewer and chapter.
+    """
+    view, doc, grant, code, message = _view_state(view_id)
+    if code != "ok":
+        return _deny(view, doc, code, message)
+    pages = (request.get_json(silent=True) or {}).get("pages")
+    if not isinstance(pages, list) or len(pages) > 50:
+        abort(400)
+    recorded = 0
+    if grant is not None:   # the author's own preview is not anyone's progress
+        for number in pages:
+            if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= doc["page_count"]:
+                continue
+            served = db.scalar("SELECT 1 FROM events WHERE kind = 'page_view' AND view_id = ? AND page = ?",
+                               view_id, number)
+            already = db.scalar("SELECT 1 FROM events WHERE kind = 'page_read' AND user_id = ? AND document_id = ? "
+                                "AND page = ?", g.user["id"], doc["id"], number)
+            if served and not already:
+                audit.log("page_read", document=doc, view_id=view_id, page=number)
+                recorded += 1
+    return jsonify(ok=True, recorded=recorded)
 
 
 @bp.post("/view/<int:view_id>/event")

@@ -9,6 +9,11 @@
     }
   });
 
+  // "Print or save as PDF" buttons.
+  document.addEventListener('click', function (event) {
+    if (event.target.closest('[data-print]')) window.print();
+  });
+
   // "Copy link" buttons.
   document.addEventListener('click', function (event) {
     var button = event.target.closest('[data-copy]');
