@@ -42,6 +42,16 @@ body.can-mark .leaf:has(.mark.hover) { cursor: pointer; }
 }
 @media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
 
+/* Reading coverage: a marker in the margin beside each paragraph not read yet. Grey until the
+   reader gets to it; amber and thicker once it has been scrolled past unread. */
+.cov { position: absolute; width: 12px; padding: 0; border: 0; background: transparent; cursor: pointer; pointer-events: auto; }
+.cov::before { content: ""; position: absolute; left: 4px; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: #c2c2c2; }
+.cov.missed::before { left: 3px; width: 5px; background: #fbb315; }
+.cov:hover::before, .cov:focus-visible::before { background: #257de0; }
+.cov:focus-visible { outline: 2px solid #257de0; outline-offset: 1px; }
+.cov.sent { display: none; }
+.vbtn.done { border-color: #5eead4; color: #5eead4; }
+
 #notes { flex: none; width: 340px; max-width: 100%; background: #1d2832; border-left: 1px solid #0d141b; display: flex; flex-direction: column; overflow: auto; padding: 14px; gap: 14px; }
 .notes-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .notes-head h2 { font: 600 16px var(--serif); color: #fff; }

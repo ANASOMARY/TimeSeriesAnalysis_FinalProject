@@ -158,11 +158,13 @@ def ingest(data: bytes, filename: str, page_range: str = "") -> dict:
         if selection is not None:
             doc.select(selection)
         pages = [[round(p.rect.width, 2), round(p.rect.height, 2)] for p in doc]
+        paragraphs = [[words for _box, words in _page_paragraphs(p)] for p in doc]
         pdf = doc.tobytes(garbage=3, deflate=True)
     return {
         "pdf": pdf,
         "page_count": len(pages),
         "pages_json": json.dumps(pages),
+        "paras_json": json.dumps(paragraphs),
         "sha256": hashlib.sha256(pdf).hexdigest(),
         "source_format": ext,
     }
@@ -245,8 +247,8 @@ def render_page(cfg, key: bytes, row, index: int, width: int, watermark: Waterma
     return out.getvalue()
 
 
-def _paragraphs(lines: list[tuple[float, float, float, float]], page_width: float) -> list[list[float]]:
-    """Group text lines, given in reading order, into paragraph rectangles.
+def _paragraphs(lines: list[tuple[float, float, float, float, int]], page_width: float) -> list[tuple[list[float], int]]:
+    """Group text lines, given in reading order, into paragraphs: a rectangle and a word count each.
 
     PDFs disagree about what a "block" is: some store a paragraph per block, others a line per
     block. So paragraphs are rebuilt from lines. A line starts a new paragraph when it is set
@@ -255,7 +257,7 @@ def _paragraphs(lines: list[tuple[float, float, float, float]], page_width: floa
     """
     indent = page_width * 0.012
     groups: list[dict] = []
-    for x0, y0, x1, y1 in lines:
+    for x0, y0, x1, y1, words in lines:
         height = y1 - y0
         current = groups[-1] if groups else None
         joins = False
@@ -274,10 +276,39 @@ def _paragraphs(lines: list[tuple[float, float, float, float]], page_width: floa
         if joins:
             current["lines"].append((x0, y0, x1, y1))
             current["x0"], current["x1"] = min(current["x0"], x0), max(current["x1"], x1)
+            current["words"] += words
         else:
-            groups.append({"lines": [(x0, y0, x1, y1)], "x0": x0, "x1": x1})
-    return [[g["x0"], min(line[1] for line in g["lines"]), g["x1"], max(line[3] for line in g["lines"])]
+            groups.append({"lines": [(x0, y0, x1, y1)], "x0": x0, "x1": x1, "words": words})
+    return [([g["x0"], min(line[1] for line in g["lines"]), g["x1"], max(line[3] for line in g["lines"])], g["words"])
             for g in groups]
+
+
+def _page_paragraphs(page) -> list[tuple[list[float], int]]:
+    """The paragraphs of one open page: each a box in fractions of the page, and its word count."""
+    width, height = page.rect.width, page.rect.height
+    lines = []
+    for block in page.get_text("dict")["blocks"]:
+        if block.get("type") != 0:
+            continue  # images
+        for line in block["lines"]:
+            text = " ".join(span["text"] for span in line["spans"])
+            if not text.strip():
+                continue
+            # Text coordinates refer to the unrotated page; the image shows the rotated one.
+            shown = (pymupdf.Rect(line["bbox"]) * page.rotation_matrix).normalize()
+            lines.append((shown.x0, shown.y0, shown.x1, shown.y1, len(text.split())))
+    found = []
+    for (x0, y0, x1, y1), words in _paragraphs(lines, width):
+        box = [max(0.0, x0 / width), max(0.0, y0 / height), min(1.0, x1 / width), min(1.0, y1 / height)]
+        if box[2] - box[0] > 0.01 and box[3] - box[1] > 0.004:
+            found.append(([round(v, 4) for v in box], words))
+    return found
+
+
+def page_paragraphs(cfg, key: bytes, row, index: int) -> list[tuple[list[float], int]]:
+    """Outline and word count of every paragraph on a page. No text is included."""
+    with _lock:
+        return _page_paragraphs(_document(cfg, key, row)[index])
 
 
 def page_blocks(cfg, key: bytes, row, index: int) -> list[list[float]]:
@@ -286,25 +317,13 @@ def page_blocks(cfg, key: bytes, row, index: int) -> list[list[float]]:
     Only rectangles are returned, never text, so the reader can let someone point at a
     paragraph without any of the manuscript's text reaching their browser.
     """
+    return [box for box, _words in page_paragraphs(cfg, key, row, index)]
+
+
+def paragraph_words(cfg, key: bytes, row) -> list[list[int]]:
+    """For a whole stored chapter: the word count of each paragraph, page by page."""
     with _lock:
-        page = _document(cfg, key, row)[index]
-        width, height = page.rect.width, page.rect.height
-        lines = []
-        for block in page.get_text("dict")["blocks"]:
-            if block.get("type") != 0:
-                continue  # images
-            for line in block["lines"]:
-                if not any(span["text"].strip() for span in line["spans"]):
-                    continue
-                # Text coordinates refer to the unrotated page; the image shows the rotated one.
-                shown = (pymupdf.Rect(line["bbox"]) * page.rotation_matrix).normalize()
-                lines.append((shown.x0, shown.y0, shown.x1, shown.y1))
-    boxes = []
-    for x0, y0, x1, y1 in _paragraphs(lines, width):
-        box = [max(0.0, x0 / width), max(0.0, y0 / height), min(1.0, x1 / width), min(1.0, y1 / height)]
-        if box[2] - box[0] > 0.01 and box[3] - box[1] > 0.004:
-            boxes.append([round(v, 4) for v in box])
-    return boxes
+        return [[words for _box, words in _page_paragraphs(page)] for page in _document(cfg, key, row)]
 
 
 def passage_text(cfg, key: bytes, row, index: int, box: list[float], limit: int = 600) -> str:

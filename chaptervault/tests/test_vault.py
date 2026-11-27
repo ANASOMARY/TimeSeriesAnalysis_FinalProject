@@ -484,8 +484,9 @@ def test_notes_can_be_pinned_to_a_passage(app, author):
 
     outlines = rae.get(f"{rae_view}/blocks/2").get_json()["blocks"]
     assert len(outlines) == 1 and all(0 <= v <= 1 for v in outlines[0])
-    assert SECRET_TEXT not in rae.get(f"{rae_view}/blocks/2").get_data(as_text=True)   # rectangles only
-    assert sam.get(f"{sam_view}/blocks/2").get_json() == {"blocks": []}
+    assert SECRET_TEXT not in rae.get(f"{rae_view}/blocks/2").get_data(as_text=True)   # rectangles and counts only
+    # Sam may not comment, but still gets the outlines: they are also how reading is tracked.
+    assert sam.get(f"{sam_view}/blocks/2").get_json() == {"blocks": outlines, "words": [9], "covered": {}}
     assert rae.get(f"{rae_view}/blocks/9").status_code == 404
 
     created = rae.json(f"{rae_view}/comments", {"page": 2, "body": "This line is the hook.", "box": outlines[0]})
@@ -494,6 +495,9 @@ def test_notes_can_be_pinned_to_a_passage(app, author):
     assert note["box"] == outlines[0] and "quote" not in note
     listed = rae.get(f"{rae_view}/comments").get_json()
     assert listed[0]["box"] == outlines[0] and "quote" not in listed[0]          # never sent to reviewers
+    # commenting on a paragraph counts as having covered it
+    assert rae.get(f"{rae_view}/blocks/2").get_json()["covered"] == {"0": "noted"}
+    assert sam.get(f"{sam_view}/blocks/2").get_json()["covered"] == {}
 
     for bad in ([0.1, 0.1, 0.1, 0.1], [0.2, 0.2], "everything", [0.1, 0.1, "x", 0.5], [True, 0, 1, 1]):
         assert rae.json(f"{rae_view}/comments", {"page": 2, "body": "x", "box": bad}).status_code == 400
@@ -1211,39 +1215,207 @@ from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa:
 from vault import progress as reporting  # noqa: E402
 
 
-def test_a_page_counts_as_read_only_when_the_reader_reports_it(app, author):
-    upload(author)
+def test_paragraphs_are_covered_one_by_one_before_a_chapter_can_be_marked_reviewed(app, author):
+    upload(author)                                           # five pages, one nine-word paragraph on each
     rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
     sam = add_reviewer(app, author, "Sam Skimmer", "sam@example.com", documents_=["1"])
     view_url, sam_view = open_chapter(rae), open_chapter(sam)
-    assert reader_config(rae, view_url)["readUrl"] == f"{view_url}/read"
+    config = reader_config(rae, view_url)
+    assert config["coverUrl"] == f"{view_url}/cover" and config["reviewedUrl"] == f"{view_url}/reviewed"
+    assert config["coverage"] == {"total": 5, "left": 5, "reviewed": False, "pagesLeft": [1, 1, 1, 1, 1],
+                                  "minWords": 5, "wordsPerMinute": 600}
 
-    for page in (1, 2):                                   # pages loaded (and preloaded) by the reader ...
+    for page in (1, 2):                                      # pages loaded (and preloaded) by the reader ...
         assert rae.get(f"{view_url}/page/{page}").status_code == 200
-    assert "0 of 5 pages read" in rae.get("/library").get_data(as_text=True)      # ... are not progress
+    library = rae.get("/library").get_data(as_text=True)     # ... are not progress
+    assert "<b>0 of 5</b> pages read" in library and "5 paragraphs to go" in library
 
-    assert rae.json(f"{view_url}/read", {"pages": [1]}).get_json() == {"ok": True, "recorded": 1}
-    assert "1 of 5 pages read" in rae.get("/library").get_data(as_text=True)
-    assert rae.json(f"{view_url}/read", {"pages": [1]}).get_json()["recorded"] == 0          # once only
-    assert rae.json(f"{view_url}/read", {"pages": [3]}).get_json()["recorded"] == 0          # never served to this session
-    assert rae.json(f"{view_url}/read", {"pages": [99, 0, "2", True, None]}).get_json()["recorded"] == 0
-    assert rae.json(f"{view_url}/read", {"pages": [2, 2]}).get_json()["recorded"] == 1
-    assert rae.json(f"{view_url}/read", {"pages": "all"}).status_code == 400
-    assert rae.json(f"{view_url}/read", {"pages": list(range(60))}).status_code == 400
-    assert sam.json(f"{view_url}/read", {"pages": [1]}).status_code == 404                  # someone else's session
-    assert "0 of 5 pages read" in sam.get("/library").get_data(as_text=True)
-    assert sam_view != view_url
+    assert rae.json(f"{view_url}/cover", {"page": 1, "paras": [0], "how": "seen"}).get_json() == {
+        "ok": True, "left": 4, "pageLeft": 0}
+    assert "<b>1 of 5</b> pages read" in rae.get("/library").get_data(as_text=True)
+    assert rae.get(f"{view_url}/blocks/1").get_json()["covered"] == {"0": "seen"}
+    assert len(query(app, "SELECT * FROM events WHERE kind = 'page_read'")) == 1          # the page is read once its paragraphs are
+
+    same = rae.json(f"{view_url}/cover", {"page": 1, "paras": [0], "how": "confirmed"}).get_json()
+    assert same["left"] == 4 and query(app, "SELECT how FROM coverage")[0]["how"] == "seen"   # first record stands
+    assert rae.json(f"{view_url}/cover", {"page": 3, "paras": [0], "how": "seen"}).get_json()["left"] == 4   # never served
+    assert rae.json(f"{view_url}/cover", {"page": 2, "paras": [7, 99], "how": "seen"}).get_json() == {
+        "ok": True, "left": 4, "pageLeft": 1}                                              # no such paragraphs
+    for bad in ({"page": 2, "paras": "all", "how": "seen"}, {"page": 2, "paras": [0], "how": "skimmed"},
+                {"page": 99, "paras": [0], "how": "seen"}, {"page": 2, "paras": [-1], "how": "seen"},
+                {"page": 2, "paras": [True], "how": "seen"}, {"paras": [0], "how": "seen"}):
+        assert rae.json(f"{view_url}/cover", bad).status_code == 400, bad
+    # the page-level rule is only for pages without text, so it cannot be used to skip paragraphs
+    assert rae.json(f"{view_url}/read", {"pages": [2]}).get_json() == {"ok": True, "recorded": 0}
+    assert sam.json(f"{view_url}/cover", {"page": 1, "paras": [0], "how": "seen"}).status_code == 404   # not Sam's session
+    assert sam_view != view_url and reader_config(sam, sam_view)["coverage"]["left"] == 5
+
+    refused = rae.json(f"{view_url}/reviewed", {"done": True})
+    assert refused.status_code == 409 and refused.get_json()["left"] == 4
+    assert "4 paragraphs still to read" in refused.get_json()["message"]
+
+    for page in (3, 4, 5):
+        rae.get(f"{view_url}/page/{page}")
+    rae.json(f"{view_url}/cover", {"page": 2, "paras": [0], "how": "seen"})
+    rae.json(f"{view_url}/cover", {"page": 3, "paras": [0], "how": "confirmed"})           # ticked by hand
+    rae.json(f"{view_url}/cover", {"page": 4, "paras": [0], "how": "confirmed"})
+    assert rae.json(f"{view_url}/reviewed", {"done": True}).status_code == 409               # one paragraph short
+    last = rae.json(f"{view_url}/cover", {"page": 5, "paras": [0], "how": "seen"}).get_json()
+    assert last == {"ok": True, "left": 0, "pageLeft": 0}
+    assert query(app, "SELECT reviewed_at FROM grants WHERE user_id = 2")[0]["reviewed_at"] is None   # reading is not declaring
+
+    assert rae.json(f"{view_url}/reviewed", {"done": True}).get_json() == {"ok": True, "reviewed": True}
+    assert query(app, "SELECT reviewed_at FROM grants WHERE user_id = 2")[0]["reviewed_at"]
+    assert reader_config(rae, view_url)["coverage"]["reviewed"] is True
+    library = rae.get("/library").get_data(as_text=True)
+    assert "<b>5 of 5</b> pages read" in library and "Marked as reviewed" in library
+    assert "Chapter marked as reviewed" in author.get("/admin/activity").get_data(as_text=True)
+    assert sorted(r["how"] for r in query(app, "SELECT how FROM coverage WHERE user_id = 2")) == [
+        "confirmed", "confirmed", "seen", "seen", "seen"]
+
+    assert rae.json(f"{view_url}/reviewed", {"done": False}).get_json() == {"ok": True, "reviewed": False}
+    assert query(app, "SELECT reviewed_at FROM grants WHERE user_id = 2")[0]["reviewed_at"] is None
 
     preview = author.post("/admin/chapters/1/preview").headers["Location"]                  # the author's preview
     author.get(f"{preview}/page/1")
-    assert author.json(f"{preview}/read", {"pages": [1]}).get_json()["recorded"] == 0
-    assert len(query(app, "SELECT * FROM events WHERE kind = 'page_read'")) == 2
+    assert reader_config(author, preview)["coverage"] is None
+    assert author.json(f"{preview}/cover", {"page": 1, "paras": [0], "how": "seen"}).get_json() == {"ok": True, "left": 0}
+    assert author.json(f"{preview}/reviewed", {"done": True}).status_code == 403
+    assert len(query(app, "SELECT * FROM coverage")) == 5
 
     author.post("/admin/grants/1/update", {"action": "revoke"})
-    assert rae.json(f"{view_url}/read", {"pages": [1]}).status_code == 403
+    assert rae.json(f"{view_url}/cover", {"page": 1, "paras": [0], "how": "seen"}).status_code == 403
+    assert rae.json(f"{view_url}/reviewed", {"done": True}).status_code == 403
     listed = author.get("/admin/activity").get_data(as_text=True)                           # not in the everyday log ...
     assert "Page read" not in listed
     assert "Page read" in author.get("/admin/activity?show=reading").get_data(as_text=True)  # ... but in the reading view
+
+
+def test_pages_without_text_count_when_looked_at_and_headings_are_not_required(app, author):
+    source = pymupdf.open()
+    first = source.new_page()
+    first.insert_text((72, 90), "Chapter One", fontsize=20)                                  # a heading: too short to be required
+    first.insert_text((72, 160), "A real paragraph with easily more than five words in it.", fontsize=12)
+    source.new_page()                                                                        # a blank page, like a figure or a scan
+    upload(author, data=source.tobytes())
+    assert _json.loads(query(app, "SELECT paras_json FROM documents")[0]["paras_json"]) == [[2, 11], []]
+
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    assert reader_config(rae, view_url)["coverage"]["pagesLeft"] == [1, 1]                  # one paragraph, one page to look at
+    for page in (1, 2):
+        rae.get(f"{view_url}/page/{page}")
+    assert rae.json(f"{view_url}/cover", {"page": 1, "paras": [0], "how": "seen"}).get_json()["left"] == 2   # the heading does not count
+    assert rae.json(f"{view_url}/cover", {"page": 1, "paras": [1], "how": "seen"}).get_json() == {"ok": True, "left": 1, "pageLeft": 0}
+    assert rae.json(f"{view_url}/cover", {"page": 2, "paras": [0], "how": "seen"}).get_json()["left"] == 1   # nothing to tick on a blank page
+    assert rae.json(f"{view_url}/reviewed", {"done": True}).status_code == 409
+    assert rae.json(f"{view_url}/read", {"pages": [1, 2]}).get_json() == {"ok": True, "recorded": 1}        # only the blank page
+    assert rae.json(f"{view_url}/reviewed", {"done": True}).status_code == 200
+
+
+def test_author_sees_what_each_reviewer_has_not_covered(app, author):
+    upload(author)
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    view_url = open_chapter(rae)
+    for page in (1, 2, 3):
+        rae.get(f"{view_url}/page/{page}")
+    rae.json(f"{view_url}/cover", {"page": 1, "paras": [0], "how": "seen"})
+    rae.json(f"{view_url}/cover", {"page": 2, "paras": [0], "how": "confirmed"})
+    box = rae.get(f"{view_url}/blocks/3").get_json()["blocks"][0]
+    rae.json(f"{view_url}/comments", {"page": 3, "body": "Good.", "box": box})
+
+    chapter = author.get("/admin/chapters/1").get_data(as_text=True)
+    assert "3 of 5 paragraphs" in chapter and "not marked as reviewed" in chapter and "2 paragraphs not covered" in chapter
+    detail = author.get("/admin/grants/1/coverage").get_data(as_text=True)
+    assert "What Rae Reader has covered" in detail and "3 of 5 paragraphs covered" in detail
+    for line in (f"{SECRET_TEXT} - page 4", f"{SECRET_TEXT} - page 5"):                       # the author sees the skipped text
+        assert line in detail
+    assert f"{SECRET_TEXT} - page 1" not in detail
+    facts = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", detail))
+    assert "Read on screen 1 " in facts and "Commented on 1 " in facts and "Ticked by hand 1 " in facts and "Still to cover 2" in facts
+    assert rae.get("/admin/grants/1/coverage").status_code == 404 and author.get("/admin/grants/99/coverage").status_code == 404
+
+    # a revised file: paragraphs no longer line up, so reading starts again; notes and access stay
+    replaced = author.post("/admin/chapters/1/replace", {"file": (io.BytesIO(make_pdf(3)), "draft-2.pdf")},
+                           content_type="multipart/form-data", follow_redirects=True).get_data(as_text=True)
+    assert "reading progress on this chapter starts again" in replaced
+    assert query(app, "SELECT COUNT(*) AS n FROM coverage")[0]["n"] == 0
+    assert query(app, "SELECT COUNT(*) AS n FROM events WHERE kind = 'page_read'")[0]["n"] == 0
+    assert query(app, "SELECT COUNT(*) AS n FROM comments")[0]["n"] == 1 and query(app, "SELECT status FROM grants")[0]["status"] == "active"
+    assert "Nothing skipped" not in author.get("/admin/grants/1/coverage").get_data(as_text=True)
+
+
+def test_chapters_uploaded_before_coverage_get_their_paragraphs_counted(app, author):
+    upload(author)
+    with app.app_context():
+        db.run("UPDATE documents SET paras_json = NULL")                                     # as an older version left it
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com", documents_=["1"])
+    assert "5 paragraphs to go" in rae.get("/library").get_data(as_text=True)
+    assert _json.loads(query(app, "SELECT paras_json FROM documents")[0]["paras_json"]) == [[9]] * 5
+
+
+def test_reviewer_sees_a_summary_of_their_own_review(app, author):
+    now = stage_review(app, author, target_in_days=5)                                         # Ada, Ben, Cy and Di, with history
+    with app.app_context():
+        for user_id, email in ((3, "ben@example.com"),):
+            db.run("UPDATE users SET status = 'active', password_hash = ?, nda_accepted_at = ? WHERE id = ?",
+                   auth.hash_password("reviewer password 1"), db.iso(now), user_id)
+        db.run("INSERT INTO comment_categories (comment_id, category_id) VALUES (1, (SELECT id FROM categories WHERE name = 'Filler'))")
+    ben = Browser(app)
+    assert ben.login("ben@example.com", "reviewer password 1").status_code == 302
+    page = ben.get("/library").get_data(as_text=True)
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", page))
+
+    assert "60%" in page and "of your pages read" in page and "6 of 10 pages" in text and "1 of 2 chapters finished" in text
+    assert "A faster pace is needed" in page and "At your current pace you would finish on" in page
+    assert "after the target" in page and "would finish by" in page
+    assert "5 pages read in the last 7 days" in text and "2 notes written" in text and "Filler 1" in text
+    assert 'class="pv-spark pv-spark-large"' in page and "An even pace to the target" in page
+    assert "Cy Slow" not in page and "Ada Done" not in page and "ada@example.com" not in page   # their own figures only
+    assert "style=" not in page
+
+    # the page map: one cell per page; chapter one was read before paragraph tracking, so by
+    # coverage nothing is ticked yet and every paragraph is still to go
+    assert page.count('name="page"') == 10 and page.count("pm pm-none") >= 10
+    assert 'title="Page 3: not read yet (0 of 1 paragraphs)"' in page
+    there = ben.post("/read/1/open", {"page": "3"}).headers["Location"]
+    assert re.fullmatch(r"/view/\d+#p=3", there)
+    assert "#" not in ben.post("/read/1/open", {"page": "99"}).headers["Location"]
+    view_url = there.split("#")[0]
+    ben.get(f"{view_url}/page/3")
+    ben.json(f"{view_url}/cover", {"page": 3, "paras": [0], "how": "seen"})
+    assert 'title="Page 3: read"' in ben.get("/library").get_data(as_text=True)
+
+    # someone with nothing assigned sees no summary, and nobody else's
+    rae = add_reviewer(app, author, "Rae Reader", "rae@example.com")
+    empty = rae.get("/library").get_data(as_text=True)
+    assert "Nothing to read yet" in empty and "of your pages read" not in empty
+
+
+def test_outlook_says_plainly_where_a_reviewer_stands():
+    now = _dt(2026, 12, 1, 12, tzinfo=_tz.utc)
+    target = _dt(2026, 12, 31, tzinfo=_tz.utc).date()
+    snap = {"now": now, "target": target, "target_end": _dt(2026, 12, 31, 23, 59, 59, tzinfo=_tz.utc)}
+    person = lambda **k: reporting.Person(1, "Rae", "rae@example.com", **k)                 # noqa: E731
+
+    assert reporting.outlook(person(total=10, read=10, status="finished"), snap)[0] == "You have finished"
+    heading, detail = reporting.outlook(person(total=100, read=0, status="not_started", needed=3.3), snap)
+    assert heading == "Not started yet" and detail == "100 pages to read. About 4 pages a day from today would finish by 31 Dec 2026."
+    heading, detail = reporting.outlook(person(total=100, read=80, status="on_track", pace=4.0, needed=0.67,
+                                               projected=now + _td(days=5)), snap)
+    assert heading == "On course" and detail == "At your current pace you finish on 6 Dec 2026, 25 days before the target of 31 Dec 2026."
+    heading, detail = reporting.outlook(person(total=100, read=40, status="at_risk", pace=1.5, needed=2.0,
+                                               projected=now + _td(days=40)), snap)
+    assert heading == "A faster pace is needed"
+    assert detail == "At your current pace you would finish on 10 Jan 2027, 10 days after the target. About 2 pages a day would finish by 31 Dec 2026."
+    heading, detail = reporting.outlook(person(total=100, read=95, status="behind", pace=0.0, needed=0.17), snap)
+    assert detail == ("You have not read in the last 14 days and have 5 pages left. "
+                      "About 2 pages a week from today would finish by 31 Dec 2026.")
+    assert reporting.outlook(person(total=10, read=4, status="overdue"), snap)[0] == "The target date has passed"
+    untargeted = {"now": now, "target": None, "target_end": None}
+    assert reporting.outlook(person(total=10, read=4, status="in_progress", projected=now + _td(days=3)), untargeted) == (
+        "In progress", "6 pages left to read. At your current pace you would finish on 4 Dec 2026.")
+    assert reporting.outlook(person(total=10, read=9, status="in_progress"), untargeted) == ("In progress", "1 page left to read.")
 
 
 def test_progress_from_before_the_change_is_carried_over_once(tmp_path):

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS documents (
   source_format TEXT NOT NULL,
   page_count INTEGER NOT NULL,
   pages_json TEXT NOT NULL,
+  paras_json TEXT,
   size_bytes INTEGER NOT NULL,
   blob_name TEXT NOT NULL UNIQUE,
   sha256 TEXT NOT NULL,
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS grants (
   created_at TEXT NOT NULL,
   revoked_at TEXT,
   last_viewed_at TEXT,
+  reviewed_at TEXT,
   UNIQUE (user_id, document_id)
 );
 CREATE TABLE IF NOT EXISTS devices (
@@ -138,6 +140,17 @@ CREATE TABLE IF NOT EXISTS categories (
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
+-- Which paragraphs each reviewer has covered, and how: "seen" (on screen long enough to have been
+-- read), "confirmed" (ticked by hand) or "noted" (a note was pinned to it).
+CREATE TABLE IF NOT EXISTS coverage (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page INTEGER NOT NULL,
+  para INTEGER NOT NULL,
+  how TEXT NOT NULL CHECK (how IN ('seen', 'confirmed', 'noted')),
+  at TEXT NOT NULL,
+  PRIMARY KEY (user_id, document_id, page, para)
+);
 CREATE TABLE IF NOT EXISTS comment_categories (
   comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
   category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -220,6 +233,8 @@ def run(sql: str, *args) -> sqlite3.Cursor:
 # Columns added after the first release. Existing databases gain them on start-up.
 ADDED_COLUMNS = {
     "users": {"invite_sent_at": "TEXT"},
+    "documents": {"paras_json": "TEXT"},
+    "grants": {"reviewed_at": "TEXT"},
     "comments": {"x0": "REAL", "y0": "REAL", "x1": "REAL", "y1": "REAL", "quote": "TEXT NOT NULL DEFAULT ''",
                  "edited_at": "TEXT"},
 }

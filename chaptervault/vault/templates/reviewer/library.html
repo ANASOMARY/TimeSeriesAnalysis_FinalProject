@@ -8,6 +8,31 @@
 {% if not items %}
 <div class="card empty"><strong>Nothing to read yet</strong>The author has not shared any chapters with you so far. You will find them here once they do.</div>
 {% else %}
+{% if summary %}{% set me = summary.me %}
+<section class="card rs" aria-label="Your review so far">
+  <div class="rs-main">
+    <div class="rs-figure">
+      <span class="pv-hero-value">{{ me.percent|round|int }}%</span>
+      <span class="pv-tile-label">of your pages read</span>
+      <span class="pv-tile-sub">{{ '{:,}'.format(me.read) }} of {{ '{:,}'.format(me.total) }} pages · {{ me.chapters_finished }} of {{ me.chapters }} chapter{{ '' if me.chapters == 1 else 's' }} finished</span>
+    </div>
+    <div class="rs-outlook">
+      <h2>{{ summary.icon }}{{ summary.heading }}</h2>
+      <p>{{ summary.detail }}</p>
+      <ul class="rs-facts">
+        {% if summary.target %}<li><b>{{ short_date(summary.target, true) }}</b> target date{% if summary.days_left > 0 %}, {{ summary.days_left|round(0, 'ceil')|int }} day{{ '' if summary.days_left|round(0, 'ceil')|int == 1 else 's' }} away{% endif %}</li>{% endif %}
+        <li><b>{{ me.read_7d }}</b> page{{ '' if me.read_7d == 1 else 's' }} read in the last 7 days</li>
+        <li><b>{{ me.notes }}</b> note{{ '' if me.notes == 1 else 's' }} written{% if summary.kinds %}:
+          {% for k in summary.kinds %}<span class="cat-label c-{{ k.color }}" title="{{ k.description }}">{{ k.name }} {{ k.used }}</span>{% endfor %}{% endif %}</li>
+      </ul>
+    </div>
+    <figure class="rs-chart">
+      {{ summary.chart }}
+      <figcaption><span class="rs-key rs-key-actual"></span>Your reading{% if summary.target %} <span class="rs-key rs-key-even"></span>An even pace to the target{% endif %}</figcaption>
+    </figure>
+  </div>
+</section>
+{% endif %}
 <div class="shelf">
 {% for item in items %}
   <article class="book{% if item.code != 'ok' %} off{% endif %}">
@@ -19,21 +44,31 @@
       {% if item.opens_left is not none and item.code == 'ok' %}<span>{{ item.opens_left }} open{{ '' if item.opens_left == 1 else 's' }} left</span>{% endif %}
       {% if item.comments %}<span>{{ item.comments }} note{{ '' if item.comments == 1 else 's' }} written</span>{% endif %}
     </div>
-    <div>
-      <progress value="{{ item.pages_read }}" max="{{ item.doc.page_count }}">{{ item.pages_read }} of {{ item.doc.page_count }}</progress>
-      <small>{{ item.pages_read }} of {{ item.doc.page_count }} pages read</small>
-    </div>
-    <div class="foot">
-      {% if item.code == 'ok' %}
-      <form method="post" action="{{ url_for('reviewer.open_chapter', doc_id=item.doc.id) }}">{{ csrf() }}
+    <form method="post" action="{{ url_for('reviewer.open_chapter', doc_id=item.doc.id) }}" class="book-body">{{ csrf() }}
+      <div>
+        <small><b>{{ item.pages_read }} of {{ item.doc.page_count }}</b> pages read{% if item.left %} · {{ item.left }} paragraph{{ '' if item.left == 1 else 's' }} to go{% endif %}{% if item.unread and item.unread|length <= 6 and item.pages_read %} · unfinished: page{{ '' if item.unread|length == 1 else 's' }} {{ item.unread|join(', ') }}{% endif %}
+          {% if item.reviewed %}<span class="badge ok">Marked as reviewed</span>{% elif not item.left %}<span class="badge info">Everything read: open it to mark it as reviewed</span>{% endif %}</small>
+        {# One cell per page: read, partly read or not started differ in fill, not colour alone; a dot marks notes. #}
+        <div class="pagemap" role="group" aria-label="Pages of {{ item.doc.title }}">
+          {% for pg in item.pages %}
+          {% set words = {'full': 'read', 'part': 'partly read', 'none': 'not read yet'}[pg.state] %}
+          <button class="pm pm-{{ pg.state }}{% if pg.notes %} pm-noted{% endif %}" name="page" value="{{ pg.n }}"{% if item.code != 'ok' %} disabled{% endif %}
+            title="Page {{ pg.n }}: {{ words }}{% if pg.paragraphs and pg.state != 'full' %} ({{ pg.done }} of {{ pg.total }} paragraphs){% endif %}{% if pg.notes %}, {{ pg.notes }} note{{ '' if pg.notes == 1 else 's' }}{% endif %}"
+            aria-label="Page {{ pg.n }}, {{ words }}{% if pg.notes %}, {{ pg.notes }} note{{ '' if pg.notes == 1 else 's' }}{% endif %}{% if item.code == 'ok' %}. Open here{% endif %}"></button>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="foot">
+        {% if item.code == 'ok' %}
         <button class="btn primary big">{{ 'Continue reading' if item.pages_read else 'Start reading' }}</button>
-      </form>
-      {% else %}
-      <div class="flash warn">{{ item.message }}</div>
-      {% endif %}
-    </div>
+        {% else %}
+        <div class="flash warn">{{ item.message }}</div>
+        {% endif %}
+      </div>
+    </form>
   </article>
 {% endfor %}
 </div>
+<p class="pm-legend"><span class="pm pm-full"></span>Read <span class="pm pm-part"></span>Partly read <span class="pm pm-none"></span>Not read yet <span class="pm pm-full pm-noted"></span>Has your note · Click a page to open the chapter there.</p>
 {% endif %}
 {% endblock %}

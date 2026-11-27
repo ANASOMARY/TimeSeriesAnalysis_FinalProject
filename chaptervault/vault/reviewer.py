@@ -4,14 +4,15 @@ from __future__ import annotations
 import re
 import threading
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import timedelta
 from functools import wraps
 
 from flask import (Blueprint, Response, abort, current_app, g, jsonify, redirect, render_template,
                    request, url_for)
 
-from . import access, audit, db, documents
+from . import access, audit, coverage, db, documents
+from . import progress as reporting
 from .auth import flash, role_required
 
 bp = Blueprint("reviewer", __name__)
@@ -68,19 +69,37 @@ def library():
         grant = db.one("SELECT * FROM grants WHERE id = ?", row["grant_id"])
         doc = db.one("SELECT * FROM documents WHERE id = ?", row["doc_id"])
         code, message = access.can_open(grant, doc, g.user)
-        pages_read = db.scalar(
-            "SELECT COUNT(DISTINCT page) FROM events WHERE kind = 'page_read' AND user_id = ? AND document_id = ?",
-            g.user["id"], doc["id"])
+        standing = coverage.state(g.user["id"], doc)
+        noted = Counter(r["page"] for r in db.all(
+            "SELECT page FROM comments WHERE user_id = ? AND document_id = ?", g.user["id"], doc["id"]))
+        # One entry per page, for the page map: fully read, partly read or untouched, and where notes are.
+        pages = [{"n": page["n"], "state": page["state"], "done": page["done"], "total": page["total"],
+                  "paragraphs": page["paragraphs"], "notes": noted.get(page["n"], 0)} for page in standing["pages"]]
+        unread = [page["n"] for page in pages if page["state"] != "full"]
         expires = db.parse_iso(grant["expires_at"])
         items.append({
             "doc": doc, "grant": grant, "code": code, "message": message,
-            "pages_read": min(pages_read, doc["page_count"]),
+            "pages": pages, "unread": unread, "pages_read": doc["page_count"] - len(unread),
+            "left": standing["left"], "total": standing["total"], "reviewed": bool(grant["reviewed_at"]),
             "days_left": (expires - db.utcnow()).days if expires else None,
             "opens_left": (grant["max_views"] - grant["views_used"]) if grant["max_views"] is not None else None,
-            "comments": db.scalar("SELECT COUNT(*) FROM comments WHERE user_id = ? AND document_id = ?",
-                                  g.user["id"], doc["id"]),
+            "comments": sum(noted.values()),
         })
-    return render_template("reviewer/library.html", items=items)
+
+    # The reviewer's own line from the author's progress report: the same figures, theirs only.
+    snap = reporting.snapshot()
+    mine = next((person for person in snap["people"] if person.id == g.user["id"]), None)
+    summary = None
+    if mine is not None and mine.total:
+        heading, detail = reporting.outlook(mine, snap)
+        kinds = db.all(
+            "SELECT c.name, c.color, c.description, COUNT(*) AS used FROM comment_categories cc "
+            "JOIN comments m ON m.id = cc.comment_id JOIN categories c ON c.id = cc.category_id "
+            "WHERE m.user_id = ? GROUP BY c.id ORDER BY c.position, c.id", g.user["id"])
+        summary = {"me": mine, "heading": heading, "detail": detail, "kinds": kinds, "target": snap["target"],
+                   "days_left": snap["days_left"], "icon": reporting.status_icon(mine.tone),
+                   "chart": reporting.sparkline(mine, snap, width=300, height=84, css="pv-spark pv-spark-large")}
+    return render_template("reviewer/library.html", items=items, summary=summary, short_date=reporting.short_date)
 
 
 @bp.route("/terms", methods=["GET", "POST"])
@@ -132,8 +151,14 @@ def open_chapter(doc_id: int):
         "SELECT id FROM views WHERE session_id = ? AND document_id = ? AND grant_id = ? "
         "AND expires_at > ? AND last_seen > ? ORDER BY id DESC LIMIT 1",
         g.session["id"], doc_id, grant["id"], db.iso(now), db.iso(now - VIEW_IDLE))
+    def reader(view_id: int):
+        """The reader's address, at the page asked for when the reviewer clicked a cell of the page map."""
+        page = request.form.get("page", type=int)
+        at = f"#p={page}" if page and 1 <= page <= doc["page_count"] else ""
+        return redirect(url_for("reviewer.viewer", view_id=view_id) + at)
+
     if live is not None:  # coming back to a chapter already open in this sitting is not a new "open"
-        return redirect(url_for("reviewer.viewer", view_id=live["id"]))
+        return reader(live["id"])
 
     counted = db.run(
         "UPDATE grants SET views_used = views_used + 1, last_viewed_at = ? "
@@ -145,7 +170,7 @@ def open_chapter(doc_id: int):
         return redirect(url_for("reviewer.library"))
     view_id = start_view(doc, grant)
     audit.log("doc_open", document=doc, view_id=view_id)
-    return redirect(url_for("reviewer.viewer", view_id=view_id))
+    return reader(view_id)
 
 
 def _view_state(view_id: int):
@@ -194,6 +219,9 @@ def viewer(view_id: int):
         "pingUrl": url_for("reviewer.ping", view_id=view_id),
         "eventUrl": url_for("reviewer.client_event", view_id=view_id),
         "readUrl": url_for("reviewer.mark_read", view_id=view_id),
+        "coverUrl": url_for("reviewer.cover", view_id=view_id),
+        "reviewedUrl": url_for("reviewer.mark_reviewed", view_id=view_id),
+        "coverage": _coverage_for_reader(doc, grant),
         "commentsUrl": url_for("reviewer.comments", view_id=view_id),
         "blocksUrl": url_for("reviewer.blocks", view_id=view_id, number=0).rsplit("/", 1)[0] + "/",
         "exitUrl": _exit_url() if grant is not None else url_for("admin.chapter", doc_id=doc["id"]),
@@ -289,10 +317,10 @@ def ping(view_id: int):
 @bp.post("/view/<int:view_id>/read")
 @api
 def mark_read(view_id: int):
-    """The reader reports pages that stayed on screen long enough to count as read.
+    """The reader reports pages with no paragraphs (a figure, a scan) that stayed on screen.
 
-    This is what reading progress is measured from. A page is only accepted if this reading
-    session was actually served it, and each page counts once per reviewer and chapter.
+    Pages with text are counted as read through their paragraphs instead. A page is only accepted
+    if this reading session was actually served it, and counts once per reviewer and chapter.
     """
     view, doc, grant, code, message = _view_state(view_id)
     if code != "ok":
@@ -302,9 +330,12 @@ def mark_read(view_id: int):
         abort(400)
     recorded = 0
     if grant is not None:   # the author's own preview is not anyone's progress
+        words = coverage.words_by_page(doc)
         for number in pages:
             if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= doc["page_count"]:
                 continue
+            if coverage.required(words[number - 1] if number <= len(words) else []):
+                continue   # a page with paragraphs is read when its paragraphs are: see cover()
             served = db.scalar("SELECT 1 FROM events WHERE kind = 'page_view' AND view_id = ? AND page = ?",
                                view_id, number)
             already = db.scalar("SELECT 1 FROM events WHERE kind = 'page_read' AND user_id = ? AND document_id = ? "
@@ -399,22 +430,87 @@ def _clean_box(value) -> list[float] | None:
     return [round(v, 4) for v in (x0, y0, x1, y1)]
 
 
+def _coverage_for_reader(doc, grant) -> dict | None:
+    """What the reader needs to guide a reviewer through a chapter: how much is left, and where."""
+    if grant is None:
+        return None
+    standing = coverage.state(g.user["id"], doc)
+    return {"total": standing["total"], "left": standing["left"], "reviewed": bool(grant["reviewed_at"]),
+            "pagesLeft": [len(page["left"]) for page in standing["pages"]],
+            "minWords": coverage.MIN_WORDS, "wordsPerMinute": coverage.MAX_WPM}
+
+
 @bp.get("/view/<int:view_id>/blocks/<int:number>")
 @api
 def blocks(view_id: int, number: int):
-    """Paragraph outlines for one page, so a reviewer can pin a note to a paragraph by clicking it."""
+    """Paragraph outlines for one page: for pinning notes, and for tracking which have been read.
+
+    Rectangles and word counts only. No text is sent.
+    """
     view, doc, grant, code, message = _view_state(view_id)
     if code != "ok":
         return _deny(view, doc, code, message, number)
     if not 1 <= number <= doc["page_count"]:
         abort(404)
-    if grant is None or not grant["allow_comments"]:
+    if grant is None:   # the author's preview neither pins notes nor tracks reading
         return jsonify(blocks=[])
     try:
-        outlines = documents.page_blocks(current_app.config["VAULT"], current_app.config["BLOB_KEY"], doc, number - 1)
+        paragraphs = documents.page_paragraphs(current_app.config["VAULT"], current_app.config["BLOB_KEY"],
+                                               doc, number - 1)
     except (OSError, ValueError, RuntimeError):
-        outlines = []
-    return jsonify(blocks=outlines)
+        paragraphs = []
+    done = {row["para"]: row["how"] for row in db.all(
+        "SELECT para, how FROM coverage WHERE user_id = ? AND document_id = ? AND page = ?",
+        g.user["id"], doc["id"], number)}
+    return jsonify(blocks=[box for box, _words in paragraphs], words=[words for _box, words in paragraphs],
+                   covered={str(index): how for index, how in done.items()})
+
+
+@bp.post("/view/<int:view_id>/cover")
+@api
+def cover(view_id: int):
+    """The reader reports paragraphs that have been read (on screen long enough) or ticked by hand."""
+    view, doc, grant, code, message = _view_state(view_id)
+    if code != "ok":
+        return _deny(view, doc, code, message)
+    payload = request.get_json(silent=True) or {}
+    number, paragraphs, how = payload.get("page"), payload.get("paras"), payload.get("how")
+    if (isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= doc["page_count"]
+            or not isinstance(paragraphs, list) or len(paragraphs) > 400 or how not in ("seen", "confirmed")
+            or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in paragraphs)):
+        abort(400)
+    if grant is None:
+        return jsonify(ok=True, left=0)
+    # Only pages this reading session was actually given can be reported as read.
+    if db.scalar("SELECT 1 FROM events WHERE kind = 'page_view' AND view_id = ? AND page = ?", view_id, number):
+        coverage.record(g.user, doc, view_id, number, paragraphs, how)
+    standing = coverage.state(g.user["id"], doc)
+    return jsonify(ok=True, left=standing["left"], pageLeft=len(standing["pages"][number - 1]["left"]))
+
+
+@bp.post("/view/<int:view_id>/reviewed")
+@api
+def mark_reviewed(view_id: int):
+    """The reviewer declares the chapter reviewed. Refused while any paragraph is still uncovered."""
+    view, doc, grant, code, message = _view_state(view_id)
+    if code != "ok":
+        return _deny(view, doc, code, message)
+    if grant is None:
+        abort(403)
+    if (request.get_json(silent=True) or {}).get("done") is False:
+        if grant["reviewed_at"]:
+            db.run("UPDATE grants SET reviewed_at = NULL WHERE id = ?", grant["id"])
+            audit.log("chapter_reopened", document=doc, view_id=view_id)
+        return jsonify(ok=True, reviewed=False)
+    left = coverage.state(g.user["id"], doc)["left"]
+    if left:
+        return jsonify(error="incomplete", left=left,
+                       message=f"{left} paragraph{'' if left == 1 else 's'} still to read before this chapter "
+                               "can be marked as reviewed."), 409
+    if not grant["reviewed_at"]:
+        db.run("UPDATE grants SET reviewed_at = ? WHERE id = ?", db.now_iso(), grant["id"])
+        audit.log("chapter_reviewed", document=doc, view_id=view_id)
+    return jsonify(ok=True, reviewed=True)
 
 
 @bp.route("/view/<int:view_id>/comments", methods=["GET", "POST"])
@@ -458,6 +554,13 @@ def comments(view_id: int):
         for category_id in chosen:
             db.run("INSERT INTO comment_categories (comment_id, category_id) VALUES (?, ?)", comment_id, category_id)
         audit.log("comment_added", document=doc, view_id=view_id, page=page_no)
+        if box is not None:   # commenting on a paragraph is the clearest sign it was reviewed
+            try:
+                outlines = documents.page_blocks(current_app.config["VAULT"], current_app.config["BLOB_KEY"],
+                                                 doc, page_no - 1)
+                coverage.record(g.user, doc, view_id, page_no, coverage.overlapped(outlines, box), "noted")
+            except (OSError, ValueError, RuntimeError):
+                pass
         return jsonify(_one_comment(comment_id)), 201
     if grant is None:  # the author sees everyone's notes while previewing
         rows = db.all("SELECT c.*, u.name FROM comments c JOIN users u ON u.id = c.user_id "

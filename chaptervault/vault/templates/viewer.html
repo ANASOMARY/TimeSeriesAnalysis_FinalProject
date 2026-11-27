@@ -11,6 +11,7 @@
     <span id="zoom-label" class="vzoom" aria-live="polite">100%</span>
     <button type="button" class="vbtn" id="zoom-in" aria-label="Zoom in">+</button>
     <label class="vpage"><span class="sr">Go to page</span><input id="page-input" type="number" min="1" max="{{ doc.page_count }}" value="1" inputmode="numeric"><span>of {{ doc.page_count }}</span></label>
+    {% if not config.isAuthor %}<button type="button" class="vbtn" id="cov-button" hidden></button>{% endif %}
     <button type="button" class="vbtn" id="notes-toggle" aria-expanded="false" aria-controls="notes">{{ 'Feedback' if config.isAuthor else 'My notes' }} <span id="notes-count" class="vcount" hidden></span></button>
   </div>
 </header>

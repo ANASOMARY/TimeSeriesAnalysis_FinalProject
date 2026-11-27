@@ -6,6 +6,7 @@ so it is always current and can be regenerated for any weekly meeting.
 """
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -48,6 +49,7 @@ class Person:
     notes_7d: int = 0
     chapters: int = 0
     chapters_finished: int = 0
+    chapters_reviewed: int = 0        # marked as reviewed by the reviewer
     assigned_at: datetime | None = None
     last_read_at: datetime | None = None
     pace: float = 0.0                 # pages a day, recent
@@ -137,7 +139,7 @@ def snapshot(now: datetime | None = None) -> dict:
     week_ago, fortnight_ago = now - timedelta(days=7), now - timedelta(days=14)
 
     grants = db.all(
-        "SELECT g.user_id, g.document_id, g.created_at, g.expires_at, d.title, d.page_count, u.name, u.email "
+        "SELECT g.user_id, g.document_id, g.created_at, g.expires_at, g.reviewed_at, d.title, d.page_count, u.name, u.email "
         "FROM grants g JOIN documents d ON d.id = g.document_id JOIN users u ON u.id = g.user_id "
         "WHERE g.status = 'active' AND u.role = 'reviewer' AND u.status != 'suspended' "
         "ORDER BY u.name COLLATE NOCASE, d.title COLLATE NOCASE")
@@ -166,6 +168,7 @@ def snapshot(now: datetime | None = None) -> dict:
         person.notes_7d += sum(1 for n in notes if n >= week_ago)
         person.chapters += 1
         person.chapters_finished += 1 if len(reads) >= pages else 0
+        person.chapters_reviewed += 1 if g["reviewed_at"] else 0
         person.assigned_at = min(person.assigned_at, granted) if person.assigned_at else granted
         reads_of.setdefault(g["user_id"], []).extend(reads)
 
@@ -442,11 +445,11 @@ def chart_summary(snap: dict) -> str:
     return text + "."
 
 
-def sparkline(person: Person, snap: dict) -> Markup:
+def sparkline(person: Person, snap: dict, width: int = 168, height: int = 44, css: str = "pv-spark") -> Markup:
     """A small trajectory for one reviewer: their line against the even pace to the target."""
     now, target_end = snap["now"], snap["target_end"]
     actual = _series(person, now)
-    width, height, pad = 168, 44, 5
+    pad = 5
     if not actual:
         return Markup("")
     start = actual[0][0]
@@ -464,13 +467,55 @@ def sparkline(person: Person, snap: dict) -> Markup:
     summary = f"{person.name}: {person.percent:.0f}% read"
     if even_now is not None:
         summary += f"; an even pace would be at {even_now:.0f}% today"
-    out = [f'<svg class="pv-spark" viewBox="0 0 {width} {height}" role="img"><title>{escape(summary)}</title>',
+    out = [f'<svg class="{css}" viewBox="0 0 {width} {height}" role="img"><title>{escape(summary)}</title>',
            f'<line class="pv-axis" x1="{pad}" x2="{width - pad}" y1="{y(0):.1f}" y2="{y(0):.1f}"/>']
     if target_end:
         out.append(f'<line class="pv-needed" x1="{x(start):.1f}" y1="{y(0):.1f}" x2="{x(target_end):.1f}" y2="{y(100):.1f}"/>')
     out.append(f'<polyline class="pv-actual" points="{_points((x(m), y(p)) for m, p in actual)}"/>')
     out.append(f'<circle class="pv-dot" cx="{x(now):.1f}" cy="{y(actual[-1][1]):.1f}" r="4"/></svg>')
     return Markup("".join(out))
+
+
+def _needed_phrase(needed: float) -> str:
+    """'about 6 pages a day', or for a gentle pace 'about 5 pages a week'."""
+    if needed >= 1.5:
+        return f"about {math.ceil(needed)} pages a day"
+    per_week = max(1, math.ceil(needed * 7))
+    return f"about {per_week} page{'' if per_week == 1 else 's'} a week"
+
+
+def outlook(person: Person, snap: dict) -> tuple[str, str]:
+    """Where a reviewer stands, said to them directly: a short heading and one or two plain sentences.
+
+    The same figures the author sees, worded as guidance: what their current pace leads to, and
+    what pace would finish in time.
+    """
+    target, target_end, left = snap["target"], snap["target_end"], person.remaining
+    pages = f"{left} page{'' if left == 1 else 's'}"
+    if person.status == "finished":
+        return "You have finished", "You have read every page of every chapter shared with you. Thank you."
+    if person.status == "overdue":
+        return "The target date has passed", f"The target was {short_date(target, True)} and {pages} are still to read."
+    if target is None:
+        detail = f"{pages} left to read."
+        if person.projected:
+            detail += f" At your current pace you would finish on {short_date(person.projected, True)}."
+        return ("Not started yet" if person.read == 0 else "In progress"), detail
+    by = f"by {short_date(target, True)}"
+    if person.status == "not_started":
+        return "Not started yet", f"{pages} to read. {_needed_phrase(person.needed).capitalize()} from today would finish {by}."
+    if person.projected is None:
+        return "A faster pace is needed", (f"You have not read in the last {PACE_WINDOW_DAYS} days and have {pages} left. "
+                                           f"{_needed_phrase(person.needed).capitalize()} from today would finish {by}.")
+    days = (person.projected - target_end).total_seconds() / 86400
+    if person.status == "on_track":
+        spare = math.floor(-days)
+        margin = f", {spare} day{'' if spare == 1 else 's'} before the target" if spare >= 1 else ", just in time for the target"
+        return "On course", f"At your current pace you finish on {short_date(person.projected, True)}{margin} of {short_date(target, True)}."
+    late = max(1, math.ceil(days))
+    return "A faster pace is needed", (
+        f"At your current pace you would finish on {short_date(person.projected, True)}, {late} day{'' if late == 1 else 's'} "
+        f"after the target. {_needed_phrase(person.needed).capitalize()} would finish {by}.")
 
 
 def status_icon(tone: str) -> Markup:

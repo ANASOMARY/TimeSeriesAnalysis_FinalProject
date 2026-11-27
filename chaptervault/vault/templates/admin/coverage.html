@@ -1,0 +1,43 @@
+{% extends "admin/layout.html" %}
+{% set active = 'admin.chapters' %}
+{% block title %}Coverage: {{ person.name }}{% endblock %}
+{% block content %}
+<div class="head"><div>
+  <div class="crumb"><a href="{{ url_for('admin.chapters') }}">Chapters</a> / <a href="{{ url_for('admin.chapter', doc_id=doc.id) }}">{{ doc.title }}</a> /</div>
+  <h1>What {{ person.name }} has covered</h1>
+  <p>{% if grant.reviewed_at %}<span class="badge ok">Marked as reviewed {{ grant.reviewed_at|day }}</span>{% else %}<span class="badge plain">Not marked as reviewed</span>{% endif %}
+    {{ standing.done }} of {{ standing.total }} paragraph{{ '' if standing.total == 1 else 's' }} covered in “{{ doc.title }}”.</p>
+</div></div>
+
+<section class="card">
+  <h2>How the covered paragraphs were covered</h2>
+  <dl class="facts">
+    <dt>Read on screen</dt><dd>{{ how['seen'] }} <span class="muted">shown for at least as long as a very fast reader would need</span></dd>
+    <dt>Commented on</dt><dd>{{ how['noted'] }} <span class="muted">a note was pinned to the paragraph</span></dd>
+    <dt>Ticked by hand</dt><dd>{{ how['confirmed'] }} <span class="muted">the reviewer marked it as reviewed without the reader seeing it read</span></dd>
+    <dt>Still to cover</dt><dd>{{ standing.left }}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Not covered yet</h2>
+  {% if not skipped %}
+  <div class="empty"><strong>Nothing skipped</strong>Every paragraph of this chapter has been covered.</div>
+  {% else %}
+  <p class="muted">Paragraphs this reviewer has not read, ticked or commented on, in page order.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Page</th><th>Paragraph begins</th></tr></thead>
+    <tbody>
+    {% for page in skipped %}
+      {% if not page.paragraphs %}
+      <tr><td class="num">{{ page.n }}</td><td class="muted">A page without text (a figure or a scan) that has not been looked at.</td></tr>
+      {% else %}
+        {% for text in page['items'] %}<tr><td class="num">{{ page.n }}</td><td><span class="passage">“{{ text }}”</span></td></tr>{% endfor %}
+        {% if page.more %}<tr><td class="num">{{ page.n }}</td><td class="muted">and {{ page.more }} more paragraph{{ '' if page.more == 1 else 's' }} on this page</td></tr>{% endif %}
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</section>
+{% endblock %}

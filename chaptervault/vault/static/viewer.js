@@ -269,40 +269,198 @@
     }).catch(function () {});
   }, 20000);
 
-  // Reading progress. A page counts as read once at least half of it (or enough of it to fill
-  // half the window) has been on screen, with the window in focus, for a few seconds in total.
-  // Pages that were only preloaded, or scrolled past, do not count.
+  // ---------------------------------------------------------- reading coverage
+  // A paragraph counts as read when the text on screen has been visible, with the window in
+  // focus, for at least as long as a very fast reader would need for it. Each second on screen is
+  // shared among the visible paragraphs by length, so a full screen of text takes as long as its
+  // word count says. A paragraph scrolled past too quickly keeps a marker in the margin, and the
+  // chapter can only be marked as reviewed when no marker is left. A page with no paragraphs
+  // (a figure, a scan) counts once it has been on screen for a few seconds.
+  var cover = cfg.coverage || null;            // absent in the author's preview
   var READ_SECONDS = 5;
+  var paras = {};                              // page number -> its paragraphs and their state
   var onScreen = {};
   var countedAsRead = {};
-  if (!cfg.isAuthor) {
-    setInterval(function () {
-      if (ended || document.hidden || !curtain.hidden) return;
-      var frame = stage.getBoundingClientRect();
-      var finished = [];
-      leaves.forEach(function (leaf) {
-        if (!leaf.have || countedAsRead[leaf.n]) return;
-        var box = leaf.el.getBoundingClientRect();
-        var visible = Math.min(box.bottom, frame.bottom) - Math.max(box.top, frame.top);
-        if (visible < 0.5 * box.height && visible < 0.5 * frame.height) return;
+  var covButton = document.getElementById('cov-button');
+
+  function setUpCoverage(leaf, data) {
+    var boxes = data.blocks || [], words = data.words || [], done = data.covered || {};
+    var entry = { boxes: boxes, words: words, required: [], done: {}, credit: {}, seen: {}, bars: {} };
+    words.forEach(function (count, index) {
+      if (count < cover.minWords) return;      // page numbers, running heads and the like
+      entry.required.push(index);
+      if (done[String(index)]) { entry.done[index] = true; return; }
+      var box = boxes[index];
+      var bar = document.createElement('button');
+      bar.type = 'button';
+      bar.className = 'cov';
+      bar.style.top = (box[1] * 100) + '%';
+      bar.style.height = ((box[3] - box[1]) * 100) + '%';
+      bar.style.left = Math.max(0, box[0] * 100 - 2.6) + '%';
+      bar.title = 'Not read yet. Click to mark this paragraph as reviewed.';
+      bar.setAttribute('aria-label', 'A paragraph on page ' + leaf.n + ' is not read yet. Mark it as reviewed');
+      bar.addEventListener('click', function (event) {
+        event.stopPropagation();
+        sendCoverage(leaf.n, [index], 'confirmed');
+      });
+      leaf.marks.appendChild(bar);
+      entry.bars[index] = bar;
+    });
+    paras[leaf.n] = entry;
+  }
+
+  function showCoverage() {
+    if (!cover || !covButton) return;
+    covButton.hidden = false;
+    covButton.classList.toggle('solid', cover.left === 0 && !cover.reviewed);
+    covButton.classList.toggle('done', cover.reviewed);
+    if (cover.reviewed) {
+      covButton.textContent = 'Reviewed \u2713';
+      covButton.title = 'You marked this chapter as reviewed. Click to remove the mark.';
+    } else if (cover.left === 0) {
+      covButton.textContent = 'Mark as reviewed';
+      covButton.title = 'Everything in this chapter has been read. Tell the author you have finished it.';
+    } else {
+      covButton.textContent = cover.left + ' to read';
+      covButton.title = 'Paragraphs you have not read yet. Click to go to the next one.';
+    }
+  }
+
+  function accessEnded(response) {
+    if (GONE.indexOf(response.status) === -1) return false;
+    response.json().catch(function () { return {}; }).then(function (info) {
+      endAccess(info.message || 'Your access to this chapter has ended.');
+    });
+    return true;
+  }
+
+  function sendCoverage(page, indexes, how) {
+    var entry = paras[page];
+    indexes = indexes.filter(function (index) { return !entry.done[index]; });
+    if (!indexes.length) return;
+    indexes.forEach(function (index) {          // hide the marker at once; the server confirms below
+      entry.done[index] = true;
+      if (entry.bars[index]) entry.bars[index].classList.add('sent');
+    });
+    post(cfg.coverUrl, { page: page, paras: indexes, how: how }).then(function (response) {
+      if (accessEnded(response)) return null;
+      if (!response.ok) throw new Error('not recorded');
+      return response.json().then(function (data) {
+        indexes.forEach(function (index) {
+          if (entry.bars[index]) { entry.bars[index].remove(); delete entry.bars[index]; }
+        });
+        var finishedNow = cover.left > 0 && data.left === 0;
+        cover.left = data.left;
+        cover.pagesLeft[page - 1] = data.pageLeft;
+        showCoverage();
+        if (finishedNow) say('Everything read. You can now mark this chapter as reviewed.');
+      });
+    }).catch(function () {                      // offline or a server hiccup: count it again later
+      indexes.forEach(function (index) {
+        entry.done[index] = false;
+        entry.credit[index] = 0;
+        if (entry.bars[index]) entry.bars[index].classList.remove('sent');
+      });
+    });
+  }
+
+  function sendPagesRead(pages) {
+    post(cfg.readUrl, { pages: pages }).then(function (response) {
+      if (accessEnded(response)) return;
+      if (!response.ok) throw new Error('not recorded');
+      pages.forEach(function (n) {
+        if (cover.pagesLeft[n - 1] > 0) { cover.pagesLeft[n - 1] = 0; cover.left = Math.max(0, cover.left - 1); }
+      });
+      showCoverage();
+    }).catch(function () {
+      pages.forEach(function (n) { countedAsRead[n] = false; onScreen[n] = READ_SECONDS - 1; });
+    });
+  }
+
+  function trackReading() {
+    if (ended || document.hidden || !curtain.hidden) return;
+    var frame = stage.getBoundingClientRect();
+    var rate = cover.wordsPerMinute / 60;       // words a second
+    var visible = [], words = 0, pages = [];
+    leaves.forEach(function (leaf) {
+      var entry = paras[leaf.n];
+      if (!entry || !leaf.have) return;
+      var rect = leaf.el.getBoundingClientRect();
+      if (!entry.required.length) {             // no paragraphs here: the few-seconds rule for the page
+        var shown = Math.min(rect.bottom, frame.bottom) - Math.max(rect.top, frame.top);
+        if (countedAsRead[leaf.n] || (shown < 0.5 * rect.height && shown < 0.5 * frame.height)) return;
         onScreen[leaf.n] = (onScreen[leaf.n] || 0) + 1;
-        if (onScreen[leaf.n] >= READ_SECONDS) {
-          countedAsRead[leaf.n] = true;
-          finished.push(leaf.n);
+        if (onScreen[leaf.n] >= READ_SECONDS) { countedAsRead[leaf.n] = true; pages.push(leaf.n); }
+        return;
+      }
+      entry.required.forEach(function (index) {
+        if (entry.done[index]) return;
+        var box = entry.boxes[index];
+        var top = rect.top + box[1] * rect.height, bottom = rect.top + box[3] * rect.height;
+        var part = Math.min(bottom, frame.bottom) - Math.max(top, frame.top);
+        if (part >= 0.6 * (bottom - top) || part >= 0.5 * frame.height) {
+          visible.push([leaf.n, entry, index]);
+          words += entry.words[index];
+          entry.seen[index] = true;
+        } else if (entry.seen[index] && entry.bars[index] && !entry.bars[index].classList.contains('missed')) {
+          entry.bars[index].classList.add('missed');   // it was on screen and left before it could be read
+          entry.bars[index].title = 'Skipped. Scroll back to read it, or click to mark it as reviewed.';
         }
       });
-      if (!finished.length) return;
-      post(cfg.readUrl, { pages: finished }).then(function (response) {
-        if (GONE.indexOf(response.status) !== -1) {
-          return response.json().catch(function () { return {}; }).then(function (info) {
-            endAccess(info.message || 'Your access to this chapter has ended.');
+    });
+    var finished = {};
+    visible.forEach(function (item) {
+      var entry = item[1], index = item[2];
+      entry.credit[index] = (entry.credit[index] || 0) + entry.words[index] / words;   // this second, shared by length
+      // (a hair of tolerance, so paragraphs sharing a screen finish on the same tick despite rounding)
+      if (entry.credit[index] >= entry.words[index] / rate - 1e-6) (finished[item[0]] = finished[item[0]] || []).push(index);
+    });
+    Object.keys(finished).forEach(function (page) { sendCoverage(Number(page), finished[page], 'seen'); });
+    if (pages.length) sendPagesRead(pages);
+  }
+
+  // "N to read" takes the reviewer to the next paragraph they have not read, wherever it is.
+  function jumpToUnread(n, tries) {
+    var leaf = leaves[n - 1], entry = paras[n];
+    var index = entry ? entry.required.filter(function (i) { return !entry.done[i]; })[0] : undefined;
+    if (entry && index !== undefined) {
+      stage.scrollTop = leaf.el.offsetTop + entry.boxes[index][1] * leaf.el.offsetHeight - stage.clientHeight * 0.25;
+      flash(entry.bars[index]);
+      return;
+    }
+    goTo(n);                                    // not loaded yet (or a page without text): go there and look again
+    if (!entry && tries < 25) setTimeout(function () { jumpToUnread(n, tries + 1); }, 300);
+  }
+
+  if (cover) {
+    showCoverage();
+    setInterval(trackReading, 1000);
+    covButton.addEventListener('click', function () {
+      if (cover.reviewed) {
+        if (!window.confirm('Remove the "reviewed" mark from this chapter?')) return;
+        post(cfg.reviewedUrl, { done: false }).then(function (response) {
+          if (response.ok) { cover.reviewed = false; showCoverage(); }
+        });
+      } else if (cover.left === 0) {
+        post(cfg.reviewedUrl, { done: true }).then(function (response) {
+          return response.json().then(function (data) {
+            if (response.ok) {
+              cover.reviewed = true;
+              say('Marked as reviewed. Thank you.');
+            } else {
+              if (typeof data.left === 'number') cover.left = data.left;
+              say(data.message || 'Not everything has been read yet.');
+            }
+            showCoverage();
           });
+        }).catch(function () { say('That could not be saved. Check your connection.'); });
+      } else {
+        for (var step = 0; step < leaves.length; step++) {
+          var n = ((current - 1 + step) % leaves.length) + 1;
+          if (cover.pagesLeft[n - 1] > 0) { jumpToUnread(n, 0); return; }
         }
-        if (!response.ok) throw new Error('not recorded');
-      }).catch(function () {   // offline or a server hiccup: report these pages again on a later tick
-        finished.forEach(function (n) { countedAsRead[n] = false; onScreen[n] = READ_SECONDS - 1; });
-      });
-    }, 1000);
+      }
+    });
   }
 
   // ------------------------------------------------- pinning notes to passages
@@ -331,11 +489,14 @@
   }
 
   function fetchOutlines(leaf) {
-    if (!cfg.canComment || outlines[leaf.n]) return;
+    if ((!cfg.canComment && !cover) || outlines[leaf.n]) return;
     outlines[leaf.n] = [];
     fetch(cfg.blocksUrl + leaf.n, { credentials: 'same-origin', cache: 'no-store' })
       .then(function (response) { return response.ok ? response.json() : { blocks: [] }; })
-      .then(function (data) { outlines[leaf.n] = data.blocks || []; })
+      .then(function (data) {
+        outlines[leaf.n] = data.blocks || [];
+        if (cover && !paras[leaf.n]) setUpCoverage(leaf, data);
+      })
       .catch(function () { delete outlines[leaf.n]; });
   }
 
@@ -412,7 +573,7 @@
     pagesEl.addEventListener('pointerdown', function (event) {
       var leaf = leafOf(event.target);
       // Dragging a box is for mouse and pen; on touch screens a drag scrolls, and a tap selects a paragraph.
-      if (!leaf || ended || event.button !== 0 || event.pointerType === 'touch' || event.target.closest('.mark.pinned')) return;
+      if (!leaf || ended || event.button !== 0 || event.pointerType === 'touch' || event.target.closest('.mark.pinned, .cov')) return;
       drag = { leaf: leaf, start: pointOn(leaf, event), x: event.clientX, y: event.clientY, moved: false, box: null };
     });
     window.addEventListener('pointerup', function () {
@@ -432,7 +593,7 @@
       }
     });
     pagesEl.addEventListener('click', function (event) {
-      if (afterDrag || ended || event.target.closest('.mark.pinned')) return;
+      if (afterDrag || ended || event.target.closest('.mark.pinned, .cov')) return;
       var leaf = leafOf(event.target);
       if (!leaf) return;
       var box = outlineAt(leaf, pointOn(leaf, event));

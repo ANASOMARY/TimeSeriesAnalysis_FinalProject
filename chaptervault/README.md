@@ -22,6 +22,8 @@ again whenever you like. Reviewers read in their browser; the file itself never 
 | **Printing and copying blocked** | Printing produces a blank page; text selection, right-click, save and copy are disabled; the page is hidden when the window loses focus. |
 | **Audit trail** | Sign-ins, every chapter opened, every page viewed, reading time, and each blocked print or copy attempt. Exportable as a spreadsheet. |
 | **Reviewer feedback** | Reviewers click a paragraph, or drag a box around any passage, and pin a note to it (or note a whole page), and can edit or delete their own notes. You see each note with the passage quoted beside it, can jump to it on the page, and can export everything. |
+| **No paragraph skipped** | The reader tracks which paragraphs each reviewer has actually had in front of them, flags any they scrolled past, and only lets a chapter be marked as reviewed when none are left. You can see exactly what each reviewer has not covered. |
+| **Reviewer's own summary** | Each reviewer sees where they stand: share read, whether their pace reaches the target date, and a map of every page showing what is read, partly read or untouched. |
 | **Progress report** | A page that shows how far each reviewer has got, their pace, and whether they will finish by your target date, with a chart of progress against that target. Prints as a two-page report or exports as a spreadsheet. |
 | **Note categories** | You define the kinds of note ("Sounds AI-written", "Hard to follow", …), each with a one-line explanation. Reviewers tap any that apply, with or without typed details. Feedback is counted and filterable by category. |
 | **Invitations by email** | Enter a mail account once and each reviewer is emailed their personal invitation as soon as you add them. Resend it, or email a password-reset link, from the reviewer's page. Without a mail account you copy the link and send it yourself. |
@@ -79,14 +81,40 @@ exporting to PDF from Word first gives you exact control over what reviewers see
 
 How it is worked out:
 
-- A page counts as *read* once it has been on the reviewer's screen for five seconds with the window
-  in focus. Pages that were only loaded, or scrolled past, do not count.
+- A page counts as *read* once every paragraph on it has been covered (see *Paragraph coverage*
+  below). Text that was only loaded, or scrolled past, does not count.
 - *Pace* is pages a day over the last 14 days, or since the chapters were assigned if that is more
   recent. Days without reading count, so going quiet lowers it.
 - *Projected finish* is today plus the pages left divided by that pace. The whole review's forecast
   is the date its last reviewer finishes.
 - *On track* means the pace meets what is needed to finish by the target; *at risk*, at least 60% of
   it; *behind*, less than that, including no recent reading.
+
+### Paragraph coverage
+
+The reader works out where each paragraph sits on the page and follows the reviewer through them.
+
+- A paragraph is **covered** when the text on screen has been visible, with the window in focus,
+  for at least as long as a very fast reader would need (600 words a minute); when the reviewer
+  ticks it by hand; or when they pin a note to it. Time on screen is shared among the visible
+  paragraphs by length, so a full screen of text takes as long as its word count says.
+- Each paragraph not yet covered has a small marker in the page margin. One that was on screen and
+  left unread turns amber. Clicking a marker ticks that paragraph as reviewed.
+- The toolbar shows how many are left and jumps to the next one. When none are left it becomes
+  **Mark as reviewed**; a chapter cannot be marked while any paragraph is uncovered.
+- Very short blocks (page numbers, running heads, most headings) are not required. A page with no
+  text, such as a figure or a scan, counts once it has been on screen for five seconds.
+- On a chapter's page, each reviewer's row shows paragraphs covered and whether they marked it as
+  reviewed, and links to the list of paragraphs they have not covered, with how the rest were
+  covered (read on screen, commented on, or ticked by hand).
+- Replacing a chapter's file starts reading again for that chapter: its paragraphs have changed.
+
+This shows that every paragraph was put in front of the reviewer and acknowledged. It cannot show
+that it was read with care; a tick is an attestation.
+
+Reviewers see the result on their library page: the share of their pages read, a sentence on whether
+their pace reaches the target date and what pace would, their trajectory, and one cell per page
+(read, partly read, not read, with a dot where they left notes) that opens the chapter at that page.
 
 ### Note categories
 
@@ -273,8 +301,8 @@ test is skipped if it is not installed.
 
 The suite drives the real HTTP routes: encryption at rest, grant isolation between reviewers,
 expiry, open limits, revocation of an open reader, device locking, single-session enforcement,
-lockout, CSRF, the author-only console, pinned notes, invitation email, note categories and the
-progress forecast.
+lockout, CSRF, the author-only console, pinned notes, invitation email, note categories, the
+progress forecast and paragraph coverage.
 
 ## Licence note
 

@@ -87,7 +87,7 @@
   </details>
   <script type="application/json" id="pv-data">{{ chart.data|tojson }}</script>
   {# Printed under the chart, so it stays on the first sheet and never takes a page of its own. #}
-  <p class="pv-printnote">Read: on the reviewer's screen for five seconds or more. Pace: pages a day over the last {{ pace_window }} days.{% if p.target %} On track: the pace meets what is needed to finish by the target; at risk: at least {{ at_risk_share }}% of it; behind: less.{% endif %}</p>
+  <p class="pv-printnote">Read: every paragraph on the page shown long enough to be read, ticked by the reviewer or commented on. Pace: pages a day over the last {{ pace_window }} days.{% if p.target %} On track: the pace meets what is needed to finish by the target; at risk: at least {{ at_risk_share }}% of it; behind: less.{% endif %}</p>
 </section>
 {% endif %}
 
@@ -100,7 +100,7 @@
     {% for r in p.people %}
     <tr>
       <td><a class="title" href="{{ url_for('admin.reviewer', user_id=r.id) }}">{{ r.name }}</a>
-        <span class="sub">{{ r.chapters_finished }} of {{ r.chapters }} chapter{{ '' if r.chapters == 1 else 's' }} finished</span></td>
+        <span class="sub">{{ r.chapters_finished }} of {{ r.chapters }} chapter{{ '' if r.chapters == 1 else 's' }} read · {{ r.chapters_reviewed }} marked reviewed</span></td>
       <td class="pv-progress">{{ meter(r.percent, meter_tone(r.status)|trim) }}
         <span class="sub num"><b>{{ r.percent|round|int }}%</b> · {{ '{:,}'.format(r.read) }} of {{ '{:,}'.format(r.total) }} pages</span></td>
       <td class="r num">{{ '+' if r.read_7d else '' }}{{ r.read_7d }} page{{ '' if r.read_7d == 1 else 's' }}
@@ -139,7 +139,7 @@
 <section class="pv-method noprint">
   <h2>How this is worked out</h2>
   <ul>
-    <li><strong>Read</strong> means a page was on the reviewer's screen for at least five seconds with the window in focus. Pages that were only loaded or scrolled past do not count.</li>
+    <li><strong>Read</strong> means every paragraph on the page has been covered: on the reviewer's screen, in focus, for at least as long as a very fast reader would need; ticked by the reviewer; or commented on. Text that was only loaded or scrolled past does not count. Each reviewer's uncovered paragraphs are listed from the chapter's page.</li>
     <li><strong>Pace</strong> is pages a day over the last {{ pace_window }} days, or since the chapters were assigned if that is more recent. Days without reading count, so going quiet lowers it.</li>
     <li><strong>Projected finish</strong> is today plus the pages left divided by that pace.{% if p.target %} <strong>Needed</strong> is the pages left divided by the days to the target.{% endif %}</li>
     {% if p.target %}<li><strong>On track</strong>: the pace meets what is needed. <strong>At risk</strong>: at least {{ at_risk_share }}% of it. <strong>Behind</strong>: less than that, including no recent reading.</li>{% endif %}

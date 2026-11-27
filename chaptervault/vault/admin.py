@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -11,7 +12,7 @@ from urllib.parse import quote
 from flask import (Blueprint, Response, abort, current_app, g, redirect, render_template, request,
                    url_for)
 
-from . import access, audit, db, documents, mailer, security
+from . import access, audit, coverage, db, documents, mailer, security
 from . import progress as reporting
 from .auth import create_invite, end_sessions, flash, invite_link
 from .reviewer import MAX_WATERMARK_LINES, categories_of, start_view
@@ -123,6 +124,7 @@ def _grant_rows(where: str, *args, order: str = "id") -> list[dict]:
             user["id"], doc["id"])
         rows.append({
             "grant": grant, "user": user, "doc": doc, "label": label, "tone": tone,
+            "coverage": coverage.state(user["id"], doc),
             "pages_read": min(pages_read, doc["page_count"]),
             "comments": db.scalar("SELECT COUNT(*) FROM comments WHERE user_id = ? AND document_id = ?",
                                   user["id"], doc["id"]),
@@ -280,10 +282,10 @@ def upload():
         documents.store(cfg, current_app.config["BLOB_KEY"], blob_name, result["pdf"])
         doc_id = db.run(
             "INSERT INTO documents (title, description, original_filename, source_format, page_count, pages_json, "
-            "size_bytes, blob_name, sha256, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "paras_json, size_bytes, blob_name, sha256, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (title if len(files) == 1 and title else _title_from(name)), description, name[:255],
-            result["source_format"], result["page_count"], result["pages_json"], len(result["pdf"]),
-            blob_name, result["sha256"], db.now_iso()).lastrowid
+            result["source_format"], result["page_count"], result["pages_json"], result["paras_json"],
+            len(result["pdf"]), blob_name, result["sha256"], db.now_iso()).lastrowid
         doc = _doc_or_404(doc_id)
         audit.log("doc_uploaded", document=doc, detail=f"{name}, {result['page_count']} pages")
         added.append(doc)
@@ -364,13 +366,16 @@ def chapter_replace(doc_id: int):
     documents.store(cfg, current_app.config["BLOB_KEY"], blob_name, result["pdf"])
     db.run(
         "UPDATE documents SET original_filename = ?, source_format = ?, page_count = ?, pages_json = ?, "
-        "size_bytes = ?, blob_name = ?, sha256 = ? WHERE id = ?",
-        name[:255], result["source_format"], result["page_count"], result["pages_json"], len(result["pdf"]),
-        blob_name, result["sha256"], doc_id)
+        "paras_json = ?, size_bytes = ?, blob_name = ?, sha256 = ? WHERE id = ?",
+        name[:255], result["source_format"], result["page_count"], result["pages_json"], result["paras_json"],
+        len(result["pdf"]), blob_name, result["sha256"], doc_id)
     db.run("DELETE FROM views WHERE document_id = ?", doc_id)
+    # The old file's pages and paragraphs no longer exist, so what was read of them cannot carry over.
+    coverage.reset(doc_id)
     documents.remove(cfg, doc["blob_name"])
     audit.log("doc_uploaded", document=doc, detail=f"replaced with {name}, {result['page_count']} pages")
-    flash(f"The chapter file was replaced ({result['page_count']} pages). Existing access rules are unchanged.")
+    flash(f"The chapter file was replaced ({result['page_count']} pages). Access rules and notes are unchanged; "
+          "reviewers' reading progress on this chapter starts again.")
     return redirect(url_for("admin.chapter", doc_id=doc_id))
 
 
@@ -587,6 +592,36 @@ def reviewer_delete(user_id: int):
 
 
 # ------------------------------------------------------------------- grants
+
+@bp.get("/grants/<int:grant_id>/coverage")
+def grant_coverage(grant_id: int):
+    """What one reviewer has and has not covered in one chapter, paragraph by paragraph."""
+    grant = db.one("SELECT * FROM grants WHERE id = ?", grant_id) or abort(404)
+    doc = _doc_or_404(grant["document_id"])
+    person = _reviewer_or_404(grant["user_id"])
+    standing = coverage.state(person["id"], doc)
+    cfg, key = current_app.config["VAULT"], current_app.config["BLOB_KEY"]
+    skipped, shown = [], 0
+    for page in standing["pages"]:
+        if not page["left"]:
+            continue
+        entry = {"n": page["n"], "paragraphs": page["paragraphs"], "items": [], "more": 0}
+        if page["paragraphs"]:
+            try:
+                outlines = documents.page_blocks(cfg, key, doc, page["n"] - 1)
+            except (OSError, ValueError, RuntimeError):
+                outlines = []
+            for index in page["left"]:
+                if shown >= 150 or index >= len(outlines):   # keep the page readable for a barely started chapter
+                    entry["more"] += 1
+                    continue
+                entry["items"].append(documents.passage_text(cfg, key, doc, page["n"] - 1, outlines[index], limit=220))
+                shown += 1
+        skipped.append(entry)
+    how = Counter(v for page in standing["pages"] for v in page["covered"].values())
+    return render_template("admin/coverage.html", grant=grant, doc=doc, person=person, standing=standing,
+                           skipped=skipped, how=how)
+
 
 @bp.post("/grants/create")
 def grants_create():

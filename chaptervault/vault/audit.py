@@ -33,6 +33,8 @@ LABELS = {
     "print_attempt": "Print attempt blocked",
     "capture_key": "Screen-capture key pressed",
     "copy_attempt": "Copy attempt blocked",
+    "chapter_reviewed": "Chapter marked as reviewed",
+    "chapter_reopened": "Review mark removed",
     "comment_added": "Feedback added",
     "comment_edited": "Feedback edited",
     "comment_deleted": "Feedback deleted",

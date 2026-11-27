@@ -44,6 +44,7 @@
     <span class="cell">
       <progress value="{{ row.pages_read }}" max="{{ row.doc.page_count }}">{{ row.pages_read }} of {{ row.doc.page_count }}</progress>
       <small>{{ row.pages_read }} of {{ row.doc.page_count }} pages · {{ row.grant.seconds_read|duration }}</small>
+      <small>{{ row.coverage.done }} of {{ row.coverage.total }} paragraphs{% if row.grant.reviewed_at %} · <b>reviewed</b>{% endif %}</small>
     </span>
     <span class="chev">
       <form method="post" action="{{ url_for('admin.grant_update', grant_id=row.grant.id) }}" class="inline">
@@ -67,7 +68,9 @@
         {% if by == 'user' %}<a class="btn" href="{{ url_for('admin.reviewer', user_id=row.user.id) }}">Reviewer page</a>
         {% else %}<a class="btn" href="{{ url_for('admin.chapter', doc_id=row.doc.id) }}">Chapter page</a>{% endif %}
       </div>
-      <p class="fine">Granted {{ row.grant.created_at|day }} · last read {{ row.grant.last_viewed_at|ago }} · {{ row.comments }} feedback note{{ '' if row.comments == 1 else 's' }}</p>
+      <p class="fine">Granted {{ row.grant.created_at|day }} · last read {{ row.grant.last_viewed_at|ago }} · {{ row.comments }} feedback note{{ '' if row.comments == 1 else 's' }}
+        · {% if row.grant.reviewed_at %}marked as reviewed {{ row.grant.reviewed_at|day }}{% else %}not marked as reviewed{% endif %}
+        · <a href="{{ url_for('admin.grant_coverage', grant_id=row.grant.id) }}">{{ row.coverage.left }} paragraph{{ '' if row.coverage.left == 1 else 's' }} not covered</a></p>
     </form>
   </div>
 </details>
