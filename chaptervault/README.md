@@ -73,7 +73,12 @@ always encrypted, and the password is stored encrypted and never shown again. Sa
 |---|---|---|---|---|
 | Gmail or Google Workspace | `smtp.gmail.com` | 587 | STARTTLS | Your address, and an *app password* (needs 2-Step Verification turned on) |
 | Amazon SES | `email-smtp.<region>.amazonaws.com` | 587 | STARTTLS | *SMTP credentials* created in the SES console |
+| Resend | `smtp.resend.com` | 465 | SSL/TLS | Username `resend`, password a Resend API key with sending access |
 | Another provider | Look up its "SMTP settings" | 587 or 465 | STARTTLS or SSL/TLS | Usually your mailbox sign-in or an app password |
+
+If you send from a dedicated sending domain that has no inbox (common with services such as
+Resend, where a subdomain like `mail.example.org` is verified), fill in *Replies go to* with a real
+mailbox so that a reviewer's reply still reaches you.
 
 Notes on Amazon SES: verify the sender address or domain first, and be aware that a new SES account
 is in a *sandbox* that only delivers to addresses you have verified until AWS approves a request

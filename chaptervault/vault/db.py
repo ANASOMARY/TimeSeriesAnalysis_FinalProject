@@ -245,6 +245,7 @@ DEFAULT_SETTINGS = {
     "smtp_password_enc": "",
     "mail_from_name": "",
     "mail_from_address": "",
+    "mail_reply_to": "",
     "invite_subject": "",
     "invite_message": "",
 }

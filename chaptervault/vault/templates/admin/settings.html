@@ -56,6 +56,8 @@
         <small>Stored encrypted and never shown again. Many providers need an “app password” here, not your normal one.</small></label>
       <label>Send from this address <input type="email" name="mail_from_address" value="{{ site.mail_from_address }}" maxlength="200" autocomplete="off"></label>
       <label>Sender name <input type="text" name="mail_from_name" value="{{ site.mail_from_name }}" maxlength="120" placeholder="{{ site.author_name }}"></label>
+      <label>Replies go to <span class="muted">(optional)</span> <input type="email" name="mail_reply_to" value="{{ site.mail_reply_to }}" maxlength="200" autocomplete="off">
+        <small>Use this when the sending address has no inbox, so a reviewer's reply still reaches you.</small></label>
       <label class="wide">Invitation subject <input type="text" name="invite_subject" value="{{ site.invite_subject }}" maxlength="200" placeholder="{{ default_subject }}"></label>
       <label class="wide">Invitation message
         <textarea name="invite_message" rows="9" maxlength="4000" placeholder="{{ default_message }}">{{ site.invite_message }}</textarea>

@@ -701,6 +701,9 @@ def settings():
                 problems.append("The mail server port must be a number, usually 587 or 465.")
             if form.get("smtp_security") not in mailer.SECURITY_MODES:
                 problems.append("Choose the connection type for the mail server.")
+        reply_to = form.get("mail_reply_to", "").strip()
+        if reply_to and not mailer.valid_address(reply_to):
+            problems.append("The address for replies is not a valid email address.")
         if problems:
             for problem in problems:
                 flash(problem, "bad")
@@ -713,6 +716,7 @@ def settings():
             db.set_setting("smtp_security", form.get("smtp_security", "starttls"))
             db.set_setting("smtp_username", form.get("smtp_username", "").strip()[:200])
             db.set_setting("mail_from_address", sender)
+            db.set_setting("mail_reply_to", reply_to)
             db.set_setting("mail_from_name", " ".join(form.get("mail_from_name", "").split())[:120])
             db.set_setting("invite_subject", " ".join(form.get("invite_subject", "").split())[:200])
             db.set_setting("invite_message", form.get("invite_message", "").replace("\r", "").strip()[:4000])

@@ -66,6 +66,9 @@ def configuration(settings: dict, key: bytes) -> dict | None:
         "password": _open_password(key, settings["smtp_password_enc"]),
         "from_name": settings["mail_from_name"].strip() or settings["author_name"].strip(),
         "from_address": sender,
+        # Where replies should go when that is not the sending address, for example when mail is
+        # sent from a dedicated sending domain that has no mailbox behind it.
+        "reply_to": settings["mail_reply_to"].strip() if valid_address(settings["mail_reply_to"].strip()) else "",
     }
 
 
@@ -87,6 +90,8 @@ def send(config: dict, to_name: str, to_address: str, subject: str, body: str) -
     message["Subject"] = _one_line(subject)[:200] or "(no subject)"
     message["From"] = formataddr((_one_line(config["from_name"]), config["from_address"]))
     message["To"] = formataddr((_one_line(to_name), to_address))
+    if config.get("reply_to"):
+        message["Reply-To"] = config["reply_to"]
     message["Date"] = formatdate(localtime=False)
     message["Message-ID"] = make_msgid(domain=config["from_address"].rsplit("@", 1)[1])
     message.set_content(body.replace("\r\n", "\n").strip() + "\n")

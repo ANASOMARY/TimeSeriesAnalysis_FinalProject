@@ -865,6 +865,21 @@ def test_author_words_the_invitation(app, author, mail):
     assert "/invite/" in body.splitlines()[-1]                # the link is added when the wording leaves it out
 
 
+def test_replies_can_be_directed_to_another_address(app, author, mail):
+    """Sending from a dedicated sending domain with no inbox, while replies reach a real mailbox."""
+    assert "not a valid email address" in set_up_email(author, mail_reply_to="info at example.org")
+    set_up_email(author, mail_from_address="info@mail.example.org", mail_reply_to="info@example.org")
+    author.post("/admin/reviewers/add", {"name": "Rae Reader", "email": "rae@example.com", "send_email": "1"})
+    author.post("/admin/settings/test-email")
+    invitation, test = mail.outbox
+    for message in (invitation, test):
+        assert message["From"] == "Ann Author <info@mail.example.org>" and message["Reply-To"] == "info@example.org"
+
+    set_up_email(author, mail_reply_to="", smtp_password="")           # cleared again: no Reply-To header at all
+    author.post("/admin/reviewers/2/send-invite")
+    assert mail.outbox[2]["Reply-To"] is None and mail.outbox[2]["From"] == "Ann Author <ann@example.com>"
+
+
 def test_form_input_cannot_add_mail_headers(app, author, mail):
     set_up_email(author, mail_from_name="Ann\r\nBcc: spy@example.com")
     author.post("/admin/reviewers/add", {"name": "Rae\r\nBcc: other@example.com", "email": "rae@example.com",
