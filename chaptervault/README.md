@@ -145,8 +145,16 @@ Later on:
   Chapters, accounts, notes and settings are kept. The same thing by hand: in the EC2 console
   select the server, choose *Connect → Session Manager*, and run
   `sudo bash /opt/chaptervault/src/chaptervault/deploy/aws/deploy.sh`.
-- **Change the address.** In Session Manager, edit `DOMAIN=` in `/opt/chaptervault/config`, then run
-  the `deploy.sh` command above.
+- **Move to an address of your own.** Create a DNS `A` record for the new name (for example
+  `chaptervault.example.org`) pointing at `ServerIpAddress`, wait a few minutes, then in CloudShell:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ANASOMARY/TimeSeriesAnalysis_FinalProject/ccr-ad86fbe7-utaqxg/chaptervault/deploy/aws/set-address.sh | bash -s -- chaptervault.example.org
+  ```
+
+  It checks the DNS record first, moves the site, and waits for the new certificate. The old address
+  stops working, so do this before inviting reviewers: links already sent must be resent, and
+  everyone signs in again at the new address (a reviewer's browser counts as a new device there).
 - **Remove everything.** `aws cloudformation delete-stack --stack-name chaptervault` deletes the
   server and every chapter on it.
 
