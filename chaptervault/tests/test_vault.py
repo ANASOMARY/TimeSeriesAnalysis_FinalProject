@@ -1043,6 +1043,7 @@ def test_real_delivery_over_an_encrypted_connection(tmp_path, monkeypatch, mode)
 import json as _json  # noqa: E402
 
 STARTERS = ["Sounds AI-written", "Hard to follow", "Awkward wording", "Filler", "Repetitive", "Eyebrow text", "Works well"]
+TYPES = ["Technical", "Editorial", "Clarification", "Gap / Missing", "Consistency", "Reference"]
 
 
 def reader_config(browser, view_url) -> dict:
@@ -1057,8 +1058,11 @@ def category_id(app, name) -> int:
 def test_a_vault_starts_with_starter_categories_and_keeps_the_authors_changes(tmp_path):
     app = create_app(tmp_path / "data")
     rows = query(app, "SELECT name, description, active FROM categories ORDER BY position")
-    assert [r["name"] for r in rows] == STARTERS
+    assert [r["name"] for r in rows] == TYPES + STARTERS          # the comment types come first
     assert all(r["active"] == 1 and len(r["description"]) > 20 for r in rows)
+    assert all("Example: " in r["description"] and len(r["description"]) <= 240 for r in rows[:6])
+    assert rows[0]["description"] == ("The content is wrong, inaccurate or misleading. "
+                                      "Example: A definition is incorrect or a formula is wrong.")
 
     with app.app_context():                                    # the author removes every category ...
         db.run("DELETE FROM categories")
@@ -1080,19 +1084,45 @@ def test_a_vault_from_before_categories_gains_them(tmp_path):
     assert query(upgraded, "SELECT body FROM comments")[0]["body"] == "old note"
 
 
+def test_a_vault_from_before_the_comment_types_gains_them_once(tmp_path):
+    first = create_app(tmp_path / "data")
+    with first.app_context():        # as the vault stood: the starters, one retired, plus two of the author's own
+        db.run("DELETE FROM categories WHERE name IN ('Technical', 'Editorial', 'Clarification', 'Gap / Missing', "
+               "'Consistency', 'Reference')")
+        db.run("UPDATE categories SET position = position - 6")
+        db.run("UPDATE categories SET active = 0 WHERE name = 'Eyebrow text'")
+        db.run("INSERT INTO categories (name, description, color, position, created_at) VALUES "
+               "('gap/missing', 'My own wording.', 'green', 7, '2026-01-01T00:00:00Z'), "
+               "('Needs a source', 'A claim with nothing behind it.', 'teal', 8, '2026-01-01T00:00:00Z')")
+        db.run("DELETE FROM settings WHERE key = 'comment_types_added'")
+    upgraded = create_app(tmp_path / "data")
+    rows = query(upgraded, "SELECT name, description, active FROM categories ORDER BY position, id")
+    assert [r["name"] for r in rows] == (["Technical", "Editorial", "Clarification", "Consistency", "Reference"]
+                                         + STARTERS + ["gap/missing", "Needs a source"])
+    kept = {r["name"]: r for r in rows}
+    assert kept["gap/missing"]["description"] == "My own wording."            # the author's version is not replaced
+    assert kept["Eyebrow text"]["active"] == 0 and kept["Technical"]["active"] == 1
+
+    with upgraded.app_context():                                              # later changes are never undone
+        db.run("DELETE FROM categories WHERE name = 'Reference'")
+        db.run("UPDATE categories SET name = 'Accuracy' WHERE name = 'Technical'")
+    names = [r["name"] for r in query(create_app(tmp_path / "data"), "SELECT name FROM categories")]
+    assert "Reference" not in names and "Technical" not in names and "Accuracy" in names and len(names) == 13
+
+
 def test_author_manages_the_categories(app, author):
     page = author.get("/admin/categories").get_data(as_text=True)
-    assert all(name in page for name in STARTERS) and "7 offered to reviewers" in page
+    assert all(name in page for name in TYPES + STARTERS) and "13 offered to reviewers" in page
 
     added = author.post("/admin/categories/add", {"name": "  Needs   a source ", "description": "A claim with nothing to back it up.", "color": ""},
                         follow_redirects=True).get_data(as_text=True)
     assert "“Needs a source” was added" in added
     new = query(app, "SELECT * FROM categories WHERE name = 'Needs a source'")[0]
-    assert new["color"] == "teal" and new["position"] == 7        # the one colour no starter uses; added last
+    assert new["color"] == "violet" and new["position"] == 13     # the colour used least so far; added last
 
     assert "already a category called" in author.post("/admin/categories/add", {"name": "needs a SOURCE"}, follow_redirects=True).get_data(as_text=True)
     assert "Give the category a short name." in author.post("/admin/categories/add", {"name": "   "}, follow_redirects=True).get_data(as_text=True)
-    assert query(app, "SELECT COUNT(*) AS n FROM categories")[0]["n"] == 8
+    assert query(app, "SELECT COUNT(*) AS n FROM categories")[0]["n"] == 14
 
     cid = new["id"]
     author.post(f"/admin/categories/{cid}/update", {"action": "save", "name": "Needs evidence", "description": "Says something without showing why.", "color": "rose"})
@@ -1125,9 +1155,10 @@ def test_reviewer_tags_notes_with_categories(app, author):
     ai, hard, filler = (category_id(app, n) for n in ("Sounds AI-written", "Hard to follow", "Filler"))
 
     offered = reader_config(rae, view_url)["categories"]
-    assert [c["name"] for c in offered] == STARTERS
-    assert offered[0] == {"id": ai, "name": "Sounds AI-written", "color": "violet", "description": offered[0]["description"]}
-    assert offered[0]["description"].startswith("Reads as machine-generated")
+    assert [c["name"] for c in offered] == TYPES + STARTERS
+    assert offered[0]["name"] == "Technical" and offered[0]["description"].endswith("a formula is wrong.")
+    assert offered[6] == {"id": ai, "name": "Sounds AI-written", "color": "violet", "description": offered[6]["description"]}
+    assert offered[6]["description"].startswith("Reads as machine-generated")
 
     box = rae.get(f"{view_url}/blocks/2").get_json()["blocks"][0]
     quick = rae.json(f"{view_url}/comments", {"page": 2, "box": box, "categories": [ai]})        # one tap, no typing

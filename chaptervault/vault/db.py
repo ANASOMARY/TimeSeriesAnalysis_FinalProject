@@ -175,6 +175,24 @@ STARTER_CATEGORIES = (
     ("Works well", "A passage worth keeping as it is.", "green"),
 )
 
+# The author's own comment types: what kind of problem a note reports. Each explanation ends with
+# the author's example, because the example is what settles a reviewer's doubt.
+COMMENT_TYPES = (
+    ("Technical", "The content is wrong, inaccurate or misleading. "
+                  "Example: A definition is incorrect or a formula is wrong.", "rose"),
+    ("Editorial", "The wording or layout needs fixing, but the meaning is fine. "
+                  "Example: Typo, grammar, caption, formatting or numbering.", "blue"),
+    ("Clarification", "The text is ambiguous or unclear, and the reviewer is not sure it is wrong. "
+                      "Example: Does 'approved' mean by the sponsor or by the board?", "amber"),
+    ("Gap / Missing", "Something that should be covered is absent. "
+                      "Example: A topic, step or term is not mentioned.", "orange"),
+    ("Consistency", "The same thing is described differently in two places. "
+                    "Example: The glossary and chapter 3 define a term differently.", "teal"),
+    ("Reference", "A citation, source or cross-reference is missing, outdated or wrong. "
+                  "Example: A cited standard has a newer edition, or 'see section 4.2' points to the wrong place.",
+     "slate"),
+)
+
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -263,6 +281,26 @@ def _seed_categories(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO settings (key, value) VALUES ('categories_seeded', '1')")
 
 
+def _plain(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _add_comment_types(conn: sqlite3.Connection) -> None:
+    """Put the comment types first in the list, once. One the author already has under the same
+    name is left exactly as they wrote it, and nothing they later rename, retire or delete is
+    ever brought back."""
+    if conn.execute("SELECT 1 FROM settings WHERE key = 'comment_types_added'").fetchone():
+        return
+    have = {_plain(row["name"]) for row in conn.execute("SELECT name FROM categories")}
+    missing = [entry for entry in COMMENT_TYPES if _plain(entry[0]) not in have]
+    if missing:
+        conn.execute("UPDATE categories SET position = position + ?", (len(missing),))
+        for position, (name, description, color) in enumerate(missing):
+            conn.execute("INSERT INTO categories (name, description, color, position, created_at) VALUES (?,?,?,?,?)",
+                         (name, description, color, position, now_iso()))
+    conn.execute("INSERT INTO settings (key, value) VALUES ('comment_types_added', '1')")
+
+
 def _carry_over_reading_progress(conn: sqlite3.Connection) -> None:
     """Progress used to be counted from pages that were *loaded*; it is now counted from pages
     that were actually on screen for a few seconds ("page_read"). So that nobody's progress
@@ -282,6 +320,7 @@ def init_app(app) -> None:
     conn.executescript(SCHEMA)
     _migrate(conn)
     _seed_categories(conn)
+    _add_comment_types(conn)
     _carry_over_reading_progress(conn)
     conn.close()
 

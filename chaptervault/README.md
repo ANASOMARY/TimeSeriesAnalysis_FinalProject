@@ -153,9 +153,13 @@ the new wording by itself; if you wrote your own, add those two points under **S
 
 ### Note categories
 
-**Categories** holds the kinds of note reviewers can choose from. A vault starts with seven
-(*Sounds AI-written*, *Hard to follow*, *Awkward wording*, *Filler*, *Repetitive*, *Eyebrow text*,
-*Works well*); add, rename, recolour, reorder or remove them as you like.
+**Categories** holds the kinds of note reviewers can choose from. A vault starts with six comment
+types that say what kind of problem a note reports (*Technical*, *Editorial*, *Clarification*,
+*Gap / Missing*, *Consistency*, *Reference*), each explained with an example, followed by seven
+about the writing itself (*Sounds AI-written*, *Hard to follow*, *Awkward wording*, *Filler*,
+*Repetitive*, *Eyebrow text*, *Works well*). Add, rename, recolour, reorder or remove them as you
+like. A vault from an earlier version gains the six comment types once, at the top of its list;
+one it already has under the same name is left as it is.
 
 - In the reader, the categories appear as buttons above the note box. A reviewer can pick several,
   pick one and save without typing, or type a note with no category at all.
